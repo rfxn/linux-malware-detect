@@ -1,0 +1,88 @@
+#!/bin/bash
+#
+# track log 0.3
+###
+# Copyright (C) 2002-2008, R-fx Networks <proj@r-fx.org>
+# Copyright (C) 2008, Ryan MacDonald <ryan@r-fx.org>
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation version 2 of the License
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software Foundation, Inc.,
+#    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+###
+#
+# Just a global PATH so we can find common binaries
+PATH=/sbin:/usr/sbin:/usr/bin:/usr/local/bin:/usr/local/sbin:$PATH ; export PATH
+
+
+# Base run path; no trailing slash
+BASERUN="/usr/local/maldetect/tmp"
+
+if [ "$1" == "" ] && [ "$2" == "" ]; then
+	echo "$0 usage: [file] [tlog]"
+	echo "file   :   path to file for tracking"
+	echo "tlog   :   data file name to store tracked sized"
+	exit 1
+else
+	FILE="$1"
+	TLOG="$2"
+fi
+
+if [ ! -f "$FILE" ]; then
+#	echo "$FILE is not a valid file, aborting"
+	exit 1
+elif [ ! -d "$BASERUN" ]; then
+#	echo "$BASERUN is not a valid operating path, aborting."
+	exit 1
+fi
+
+if [ ! -f "$BASERUN/$TLOG" ]; then
+	echo "0" > $BASERUN/$TLOG
+fi
+
+TSIZE=`cat $BASERUN/$TLOG` >> /dev/null 2>&1
+
+getsize() {
+if [ ! -f "$BASERUN/$TLOG" ]; then
+	SIZE=`stat -c %s $FILE`
+	echo $SIZE > $BASERUN/$TLOG
+        NEWSIZE=`stat -c %s $FILE`
+elif [ -f "$BASERUN/$TLOG" ] && [ "$TSIZE" == "0" ]; then
+        SIZE=`stat -c %s $FILE`
+        echo $SIZE > $BASERUN/$TLOG
+        NEWSIZE=`stat -c %s $FILE`
+	SIZE=0
+else
+	SIZE=`cat $BASERUN/$TLOG`
+	NEWSIZE=`stat -c %s $FILE`
+fi
+}
+
+getsize
+
+if [ ! "$NEWSIZE" -lt "$SIZE" ] && [ "$NEWSIZE" -ne "$SIZE" ]; then
+	tail -c `expr $NEWSIZE - $SIZE` $FILE
+	echo $NEWSIZE > $BASERUN/$TLOG
+elif [ "$NEWSIZE" -lt "$SIZE" ]; then 
+if [ -f "$FILE.1" ]; then
+        RTSIZE=`stat -c %s $FILE.1`
+        tail -c `expr $RTSIZE - $SIZE` $FILE.1
+elif [ -f "$FILE.1.gz" ]; then
+	gunzip $FILE.1.gz
+        RTSIZE=`stat -c %s $FILE.1`
+        tail -c `expr $RTSIZE - $SIZE` $FILE.1
+	gzip $FILE.1
+fi
+	SIZE=0
+	echo "$NEWSIZE" > $BASERUN/$TLOG
+	tail -c `expr $NEWSIZE - $SIZE` $FILE
+        echo $NEWSIZE > $BASERUN/$TLOG
+fi

@@ -1,0 +1,219 @@
+v1.4.2 | Feb 25th 2013:
+[New] detection and alerting of libkeyutils root compromised libraries
+[Change] cron.daily now tests for directadmin and scans appropriate user domain paths
+[Change] removed temporary paths /var/tmp, /tmp, and /dev/shm from cron.daily which are
+         now added explicitly to all scans
+
+v1.4.1 | Nov 20th 2011:
+[Change] rfxn.com ftp server moved and anonymous FTP checkout uploads changed
+[Change] modsec.sh force sets clamav_scan=0 as native LMD scanner engine is faster on
+         single / small file sets
+[Fix] correct plesk if statement added to to daily scan cronjob
+[New] added -U|--user to force execution under defined user, ideal for restoring user
+      quarantined data or viewing user reports
+      e.g: maldet --user nobody --report
+      e.g: maldet --user nobody --restore 050910-1534.21135
+[New] added public_scan variable to conf.maldet to control enabling of public mode
+      scanning, disabled by default
+[New] added cron.d/maldet_pub cronjob to populate public user paths when public mode
+      scanning is enabled; does nothing when disabled
+[Change] README file updated, had fallen behind on CLI usage help details
+[New] added -co|--config-option for defining conf.maldet options on the CLI
+[Fix] README, COPYING.GPL and CHANGELOG are now properly copied into the installation path
+[Fix] version header in config import template was incorrect
+[Fix] value of email_ignore_clean is now properly preserved on version upgrades
+[New] added modsec.sh to allow for easy calls from mod_security2 inspectFile hook
+[Change] autodetect executing uid and define public mode scanning variables
+[New] added public mode scanning which redefines tmpdir, sessdir, quardir to pub/username/
+      directory tree for user initiated (non-root) scans
+[Change] installation permissions changed to 644/755 for public mode support
+[Change] revised (gz)base64 rules to be more specific thus reducing false positives
+[Fix] tlog was set to use /bin/sh which breaks usage on systems with default shells other
+      than bash
+
+v1.4.0 | Apr 17th 2011:
+[Change] default editor now inherited from $EDITOR
+[New] clamav signatures update through sigup(), -u|--update
+[New] cleaner rules update through sigup(), -u|--update
+[Change] added error checking for missing or corrupted signature files
+[Fix] monitor_cycle() now properly trims inotify_log
+[Fix] version dates in CHANGELOG for 1.3.8 -> current had 2010 instead of 2011
+[New] added -b|--background flag to execute scans in background
+[Change] cron.daily now uses the -b flag for background scanning
+[Change] wget calls now use the --referer option to broadcast local LMD version
+[Fix] replaced stray references of absolute install path with the install path variable
+[New] stage2 (HEX) scanner now supports use of named pipe (FIFO) for passing file hex contents,
+      enabled by default, provides better performance with larger depth anlaysis of files
+[New] added hex_fifo_scan & hex_fifo_depth variables to conf.maldet for fifo hex scanning
+[Change] -c|--checkout now supports directory paths
+[Change] -r|--scan-recent and -a|--scan-all now supports single file scans
+[Fix] replaced absolute path to nice on inotifywait exec to which located variable value
+[Change] added error checking for all internally required binaries e.g: wget, find, od etc...
+[New] detection of ClamAV clamscan binary and usage as default scanner engine; when detected,
+      clamscan is executed on scan file lists using rfxn.com LMD clamav-compat sigs
+[Change] added OSTYPE check for differentiating md5 sum binaries on linux and FreeBSD
+[Change] added OSTYPE check on monitor mode to disable on FreeBSD, pending kqueue alternative
+         to inotifywait
+[Fix] revised od flags for FreeBSD support
+[Fix] ignore_inotify now properly interprets extended posix regexp as ignore parameters
+[Change] added sample ignore values into ignore_inotify along with sane defaults to
+         ignore common noisy files
+[New] added statistical analysis for string length to identify threats based on the longest
+      uninterrupted string within files, common of obfuscated code (e.g: base64, gzip etc...)
+[New] added string_length_scan & string_length variables to conf.maldet for strlength scanning
+[Fix] ignore_file_ext has been readded and now correctly ignores files based on extension
+[Fix] replaced absolute path to mail with which located variable value
+[Fix] lmdup() now properly errors out when rfxn.com web server is offline
+[New] added clamav_scan variable to conf.maldet to toggle clamscan detection
+[New] Full compatibility under the following distros has been verified :)
+        - FreeBSD 9.0-CURRENT
+        - RHEL/CentOS 5.6
+        - RHEL 6
+        - Fedora Core 14
+        - OpenSuse 11.4
+        - Suse Linux Enterprise Server 11 SP1
+        - Ubuntu Desktop/Server 10.10
+        - Debian 6.0.1a
+[Change] updated README file for new features & vars, sample ignore usage, revised features
+         and updated cymru hash statistics
+[Fix] relaxed grep for inotify sysfunctions to just inotify_ on System.map file
+[New] can now pass list to -e|--report to view all available scan reports
+      e.g: maldet --report list
+[New] can now pass an e-mail address to -e|--report to email a specific report
+      e.g: maldet --report SCANID user@domain.com
+[New] added email_ignore_clean variable to suppress alerts where all hits are cleaned
+
+v1.3.9 | Mar 16th 2011:
+[Fix] ignore files are now properly imported on version updates
+[Change] cron.daily now checks for version updates
+[Fix] hexdepth greater than 65Kb caused an 'argument list too long' error with hexstring.pl
+      which would fail-clean any malware on hex checks
+[Change] default hex depth increased to 61440 as there was an increasing margin of error on
+         missing threats due to them falling outside the default hexdepth; will add offset
+         option to signatures in the near future
+[Change] updated cymru hash statistics in README file
+
+v1.3.8 | Jan 30th 2011:
+[Fix] revised inotify tracking log file to properly rotate instead of growing indefinitely
+
+v1.3.7 | Nov 27th 2010:
+[Fix] package ownership at some point got set to uid 501 instead of root
+[Fix] daily cronjob now checks ps output for inotifywait proc instead of pidof
+[Fix] monitor mode users would exit prematurely if a user home path did not exist
+[Fix] a file hijacking race condition existed with quarantine mode restore function
+[Fix] inotify max_user_instances value was being set to a value that would cause inotifywait
+      to fail
+
+v1.3.6 | May 21st 2010:
+[Fix] restore option will now handle session based restores for quarantines that
+      were manually invoked with -q|--quar SCANID
+[Fix] session data gets recreated if it disappears during scan
+
+v1.3.5 | May 18th 2010:
+[Fix] tlog now handles data that logged between 0bytes and first wake cycle
+[Fix] monitor_check now properly handles CREATE,ISDIR events
+[Change] --alert-daily|weekly alerts have been changed similar to manual alerts
+[Fix] cleaner was not properly running on monitor_check calls to scan files
+[Fix] quar_suspend was not properly running on monitor_check calls to quar()
+[Change] monitor tracker files now pass through trim_log to avoid oversizing
+[Fix] monitor_check now properly handles path names with spaces
+[Fix] monitor_check was throwing nx file/directory error for monitor.pid
+[Fix] older bash versions were having trouble with the [[ =~ ]] regexp search
+[Change] set all script files from shebang/bin/sh to shebang/bin/bash
+[Change] --alert-daily|weekly will now only send alerts if hits were found
+[New] -d|--update-ver now compares file hashes to determine update status
+[Fix] suspend events were not properly being added to monitor alerts
+[Change] all alerts have had spacing changes to make them more readable
+[Fix] signature names now properly list for daily|weekly alerts hit list
+[Fix] monitor_check will now recursive monitor newly created directories
+[New] monitor daily|weekly alerts now save as a pseudo scan report with SCANID
+[Fix] monitor reports now generate properly when quar_hits=0
+
+v1.3.4 | May 16th 2010:
+[Fix] cleaner function was not properly executing under certain conditions
+[Change] additional error checking/output added to the cleaner function
+[Change] default status output of scans changed for better performance
+[New] added ignore_intofiy for ignoring paths from the monitor service
+[Change] updated ignore section of README
+[Fix] backreference errors kicking from scan_stage1 function
+[New] -d|--update-ver option added to update installed version from rfxn.com
+[Change] updated short and long usage output for update-ver usage
+[Fix] -k|--kill-monitor now properly kills only the inotifywait/monitor pid's
+[Fix] monitor_cycle function now correctly stores its pid in the pidfile
+[Fix] files with multiple events in the same waking cycle are only scanned once
+[Change] install.sh now symlinks maldet executable to /usr/local/sbin/lmd
+
+v1.3.3 | May 15th 2010:
+[Fix] quarantined files were not properly dropping owner
+[New] signature based, rule driven, cleaner component added
+[New] base64.inject cleaner rule
+[New] gzbase64.inject cleaner rule
+[New] -n|--clean SCANID option added to batch clean scan all files from a scan
+[Fix] made default install file/path permissions more strict (750/640)
+[New] install.sh now preserves conf.maldet settings
+[New] install.sh now links backups of old installation to INSTALL_PATH.last
+[Fix] install.sh now properly imports session data from previous install
+[New] -s|--restore can now take a SCANID to batch restore all files from a scan
+[Change] improved the layout of conf.maldet; more scan options and commenting
+[New] added quar_susp_minuid option for suspend user minimum user id
+[Fix] inotify monitor now properly acts on MODIFY,MOVE_TO,MOVE_FROM states
+[Change] inotify monitor now can take a list of paths or file for path input
+[Change] inotify monitor now has no default use, must specifiy USER|FILE|PATHS
+[Change] revised short and long usage output for new options/usage changes
+[Change] inotify monitor now spawns only one process for all monitored paths
+[Change] inotify monitor sets max_user_instances to processors*2
+[Change] inotify monitor sets max_user_watches to inotify_base_watches*users
+[Change] migrated all inotify options from internals.conf to conf.maldet
+[New] added inotify_base_watches to conf.maldet for max file wathces multiplier
+[New] added inotify_nice to conf.maldet for run-time prio of inotifywait
+[New] added inotify_webdir to conf.maldet for html/web root only monitoring
+[Change] extensive format change to README
+[Change] rewrote inotify section of README to reflect the many changes
+[New] added cleaner section to README
+[Change] -q|--quarantine now calls cleaner if quar_clean=1
+[Change] -n|--clean can now do in place cleaning without quarantine
+[Fix] cleaner function was not properly executing under certain conditions
+
+v1.3.2 | May 13th 2010:
+[New] added ignore files: ignore_paths , ignore_sigs 
+[Change] ignore_sigs is processed as a pre-scan component before all scans
+[Change] revised README file to include details on new ignore options
+[Change] signature counts now displayed pre-scan and post-update
+[Change] install.sh now runs --update after installation
+[Fix] -p|--purge now properly clears session state data
+[New] added [ SIGNATURE UPDATES ] section to README file
+[Fix] some functions were referencing full paths instead of the variable equivs
+
+v1.3.1 | May 12th 2010:
+[Fix] typo in report command eout()
+[Fix] cron.daily tmpwatch on invalid path
+[Change] redirect stdout to /dev/null on tmpwatch calls in cron.daily
+[Change] better commented cron.daily actions
+[Change] cron.daily scans will now hit /home*/*/public_html on non-ensim systems
+[Change] inotify monitor now properly handles any user homedir paths
+[Fix] sigup will now download full signature set when no sigs are found local
+[Fix] rewrote 17 signatures that would never match due to hexdepth restrictions
+[Fix] removed some HEX signatures derived from ClamAV that would never hit
+[Change] files must now be >32bytes to be included in search results
+[Change] search results default to a max directory depth of 15
+[New] added vars for minfilesize and maxdepth scan options
+[Change] updated inotifywait to v1.3.6, statically linked binary
+[Info] signature RSS and XML data sources added, see:
+http://www.rfxn.com/signature-updates-rss-feed/
+[Info] LMD now has a homepage on rfxn.com:
+http://www.rfxn.com/projects/linux-malware-detect/
+[New] adopted new versioning scheme 
+      [MAJOR].[MINOR].[REV]
+      1       3       1
+
+v1.3 | May 11th 2010:
+- First public release
+
+v1.1 - v1.2 | Mar. 2010 - May 2010:
+- Internal releases
+
+v0.5 - v1.0 | Nov. 2009 - Feb. 2010:
+- Closed beta
+
+v0.4< | Oct. 2009:
+- Internal releases

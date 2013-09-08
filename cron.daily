@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# clear quarantine/session/tmp data every 14 days
+/usr/sbin/tmpwatch 336 /usr/local/maldetect/tmp >> /dev/null 2>&1
+/usr/sbin/tmpwatch 336 /usr/local/maldetect/sess >> /dev/null 2>&1
+/usr/sbin/tmpwatch 336 /usr/local/maldetect/quarantine >> /dev/null 2>&1
+/usr/sbin/tmpwatch 336 /usr/local/maldetect/pub/*/ >> /dev/null 2>&1
+
+# check for new release version
+/usr/local/maldetect/maldet -d >> /dev/null 2>&1
+
+# check for new definition set
+/usr/local/maldetect/maldet -u >> /dev/null 2>&1
+
+# if were running inotify monitoring, send daily hit summary
+if [ "$(ps -A --user root -o "comm" | grep inotifywait)" ]; then
+        /usr/local/maldetect/maldet --alert-daily >> /dev/null 2>&1
+else
+	# scan the last 2 days of file changes
+	if [ -d "/home/virtual" ] && [ -d "/usr/lib/opcenter" ]; then
+		# ensim
+	        /usr/local/maldetect/maldet -b -r /home/virtual/?/fst/var/www/html 2 >> /dev/null 2>&1
+	        /usr/local/maldetect/maldet -b -r /home/virtual/?/fst/home/?/public_html 2 >> /dev/null 2>&1
+	elif [ -d "/etc/psa" ] && [ -d "/var/lib/psa" ]; then
+		# psa
+		/usr/local/maldetect/maldet -b -r /var/www/vhosts/?/httpdocs 2 >> /dev/null 2>&1
+		/usr/local/maldetect/maldet -b -r /var/www/vhosts/?/subdomains/?/httpdocs 2 >> /dev/null 2>&1
+	elif [ -d "/usr/local/directadmin" ]; then
+		# DirectAdmin
+                /usr/local/maldetect/maldet -b -r /var/www/html/?/ 2 >> /dev/null 2>&1
+                /usr/local/maldetect/maldet -b -r /home?/?/domains/?/public_html 2 >> /dev/null 2>&1
+	else
+		# cpanel, interworx and other standard home/user/public_html setups
+	        /usr/local/maldetect/maldet -b -r /home?/?/public_html 2 >> /dev/null 2>&1
+	fi
+
+	# scan default apache docroot paths
+	if [ -d "/var/www/html" ]; then
+		/usr/local/maldetect/maldet -b -r /var/www/html 2 >> /dev/null 2>&1
+	fi
+	if [ -d "/usr/local/apache/htdocs" ]; then
+		/usr/local/maldetect/maldet -b -r /usr/local/apache/htdocs 2 >> /dev/null 2>&1
+	fi
+fi

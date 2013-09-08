@@ -1,0 +1,1 @@
+sed -i -e s/<?.*eval(base64_decode(.*?>// -e s/<?php.*eval(base64_decode(.*?>// -e s/eval(base64_decode([^;]*;// 

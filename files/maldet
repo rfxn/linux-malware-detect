@@ -1,0 +1,1677 @@
+#!/bin/bash
+#
+##
+# Linux Malware Detect v1.4.2
+#             (C) 2002-2013, R-fx Networks <proj@r-fx.org>
+#             (C) 2013, Ryan MacDonald <ryan@r-fx.org>
+# inotifywait (C) 2007, Rohan McGovern <rohan@mcgovern.id.au>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+#
+ver=1.4.2
+inspath=/usr/local/maldetect
+cnf=$inspath/conf.maldet
+intcnf=$inspath/internals.conf
+datestamp=`date +"%m%d%y-%H%M"`
+rver=$ver
+
+header() {
+	echo "Linux Malware Detect v$ver"
+	echo "            (C) 2002-2013, R-fx Networks <proj@r-fx.org>"
+	echo "            (C) 2013, Ryan MacDonald <ryan@r-fx.org>"
+        echo "inotifywait (C) 2007, Rohan McGovern <rohan@mcgovern.id.au>"
+	echo "This program may be freely redistributed under the terms of the GNU GPL v2"
+	echo ""
+}
+
+
+if [ -f "$cnf" ] && [ ! "$cnf" == "" ]; then
+   source $cnf
+else
+   header
+   echo "maldet($$): {glob} $cnf not found, aborting."
+   exit 1
+fi
+
+if [ -f "$intcnf" ] && [ ! "$intcnf" == "" ]; then
+   source $intcnf
+else
+   header
+   echo "maldet($$): {glob} $intcnf not found, aborting."
+   exit 1
+fi
+
+if [ ! "$(whoami)" == "root" ]; then
+	if [ -z "$public_scan" ] || [ "$public_scan" == "0" ]; then
+		args="$@"
+		if [[ "$args" =~ "modsec" ]]; then
+			echo "1 maldet: OK"
+			exit
+		fi
+		header
+		echo "public scanning is currently disabled, please contact your system administrator to enable public_scan in conf.maldet."
+		exit
+	fi
+	pub=1
+	user=`whoami`
+        quardir=$inspath/pub/$user/quar
+        sessdir=$inspath/pub/$user/sess
+        tmpdir=$inspath/pub/$user/tmp
+        logf=$inspath/pub/$user/event_log
+	mkdir -p $quardir >> /dev/null 2>&1
+	mkdir -p $sessdir >> /dev/null 2>&1
+	mkdir -p $tmpdir >> /dev/null 2>&1
+	touch $logf
+else
+	echo $ver > $lmd_verf
+fi
+
+if [ -z "$wget" ]; then
+	header
+	echo "could not find required binary wget, aborting."
+	exit 1	
+fi
+
+if [ -z "$md5sum" ]; then
+	header
+	echo "could not find required binary md5sum, aborting."
+	exit 1	
+fi
+
+if [ -z "$od" ]; then
+	header
+	echo "could not find required binary od, aborting."
+	exit 1	
+fi
+
+if [ -z "$find" ]; then
+	header
+	echo "could not find required binary find, aborting."
+	exit 1	
+fi
+
+if [ -z "$perl" ]; then
+	header
+	echo "could not find required binary perl, aborting."
+	exit 1	
+fi
+
+if [ -z "$EDITOR" ]; then
+	defedit=`which nano 2> /dev/null`
+	if [ -z "$defedit" ]; then
+		EDITOR=vi
+	else
+		EDITOR=nano
+	fi
+fi
+
+if [ "$hex_fifo_scan" == "1" ]; then
+ mkfifo=`which mkfifo 2> /dev/null`
+ if [ -f "$mkfifo" ] && [ ! -p "$hex_fifo" ]; then
+	$mkfifo -m 666 $hex_fifo
+ fi
+fi
+
+usage_short() {
+cat <<EOF
+signature set: $def_ver
+usage maldet [-h|--help] [-l|--log] [-e|--report] [-p|--purge] [-c|--checkout]
+[-b|--background] [-m|--monitor] [-k|--kill-monitor] [-a|--scan-all] [-r|--scan-recent]
+[-q|--quarantine] [-s|--restore] [-n|--clean] [-u|--update] [-d|--update-ver]
+EOF
+}
+
+usage_long() {
+cat<<EOF
+signature set: $def_ver
+usage $0 [ OPTION ]
+    -b, --background
+      Execute operations in the background, ideal for large scans
+      e.g: maldet -b -r /home/?/public_html 7
+
+    -u, --update
+       Update malware detection signatures from rfxn.com
+
+    -d, --update-ver
+       Update the installed version from rfxn.com
+
+    -m, --monitor USERS|PATHS|FILE
+       Run maldet with inotify kernel level file create/modify monitoring
+       If USERS is specified, monitor user homedirs for UID's > 500
+       If FILE is specified, paths will be extracted from file, line spaced
+       If PATHS are specified, must be comma spaced list, NO WILDCARDS!
+       e.g: maldet --monitor users
+       e.g: maldet --monitor /root/monitor_paths
+       e.g: maldet --monitor /home/mike,/home/ashton
+
+    -k, --kill
+       Terminate inotify monitoring service
+
+    -r, --scan-recent PATH DAYS
+       Scan files created/modified in the last X days (default: 7d, wildcard: ?)
+       e.g: maldet -r /home/?/public_html 2
+
+    -a, --scan-all PATH
+       Scan all files in path (default: /home, wildcard: ?)
+       e.g: maldet -a /home/?/public_html
+
+    -c, --checkout FILE
+       Upload suspected malware to rfxn.com for review & hashing into signatures
+
+    -l, --log
+       View maldet log file events
+
+    -e, --report SCANID email
+       View scan report of most recent scan or of a specific SCANID and optionally
+       e-mail the report to a supplied e-mail address
+       e.g: maldet --report
+       e.g: maldet --report list
+       e.g: maldet --report 050910-1534.21135
+       e.g: maldet --report SCANID user@domain.com
+
+    -s, --restore FILE|SCANID
+       Restore file from quarantine queue to orginal path or restore all items from
+       a specific SCANID
+       e.g: maldet --restore /usr/local/maldetect/quarantine/config.php.23754
+       e.g: maldet --restore 050910-1534.21135
+
+    -q, --quarantine SCANID
+       Quarantine all malware from report SCANID
+       e.g: maldet --quarantine 050910-1534.21135
+
+    -n, --clean SCANID
+       Try to clean & restore malware hits from report SCANID
+       e.g: maldet --clean 050910-1534.21135
+
+    -U, --user USER
+       Set execution under specified user, ideal for restoring from user quarantine or
+       to view user reports.
+       e.g: maldet --user nobody --report
+       e.g: maldet --user nobody --restore 050910-1534.21135
+
+    -co, --config-option VAR1=VALUE,VAR2=VALUE,VAR3=VALUE
+       Set or redefine the value of conf.maldet config options
+       e.g: maldet --config-option email_addr=you@domain.com,quar_hits=1
+
+    -p, --purge
+       Clear logs, quarantine queue, session and temporary data.
+EOF
+}
+
+eout() {
+arg=$1
+stdout=$2
+appn=maldet
+	if [ ! -f "$logf" ]; then
+		touch $logf
+	fi
+	logf_size=`$wc -l $logf | awk '{print$1}'`
+	if [ "$logf_size" -ge "20000" ]; then
+                trim=1000
+                printf "%s\n" "$trim,${logf_size}d" w | ed -s $logf
+	fi
+        if [ ! "$arg" == "" ]; then
+                echo "$(date +"%b %d %H:%M:%S") $(hostname -s) $appn($$): $arg" >> $logf
+		if [ ! -z "$stdout" ]; then
+			echo "$appn($$): $arg"
+		fi
+        fi
+}
+
+trap_exit() {
+	if [ "$svc" == "m" ]; then
+		echo
+		eout "{glob} monitor interrupt by user, sending kill." 1
+		monitor_kill
+		exit
+	elif [ "$svc" == "a" ] || [ "$sv" == "r" ]; then
+		echo
+		gen_report
+		if [ ! "$tot_hit" == "0" ]; then
+                    if [ "$suppress_cleanhit" == "1" ] && [ ! "$tot_hit" == "$cl_hit" ]; then
+                       alert file $nsess
+                    elif [ "$suppress_cleanhit" == "0" ]; then
+                       alert file $nsess
+                    fi
+		fi
+		mv $scan_session $nsess_hits
+		rm -f $find_results $scan_session
+		eout "{glob} scan interrupt by user, aborting scan..." 1
+		eout "{scan} scan report saved, to view run: maldet --report $datestamp.$$" 1
+		if [ "$quar_hits" == "0" ] && [ ! "$tot_hit" == "0" ]; then
+		  eout "{glob} quarantine is disabled! set quar_hits=1 in conf.maldet or to quarantine results run: maldet -q $datestamp.$$" 1
+		fi
+		exit
+	fi
+}
+
+check_clibkeyutils() {
+files="/lib64/libkeyutils.so.1.9 /lib64/libkeyutils-1.2.so.2 /lib/libkeyutils.so.1.9 /lib/libkeyutils-1.2.so.2"
+for lib in $files; do
+        if [ -f "$lib" ]; then
+		alert_clib=1
+		if [ -z "$clib" ]; then
+			clib="$lib"
+		else
+		        clib="$lib $clib"
+		fi
+        fi
+done
+
+
+if [ "$alert_clib" ]; then
+	eout "{clib} !! ATTENTION !! root compromised libkeyutils libraries found at $clib" 1
+	rver="$ver.clib"
+fi
+
+if [ "$alert_clib" ] && [ "$email_addr" ]; then
+emlf=$tmpdir/.clib.eml.$$
+cat >> $emlf <<EOF
+Important message follows;
+	One or more compromised libraries for libkeyutils have been found on $HOSTNAME.  This is an indication that this system has been root compromised and requires immediate investigation by a qualified system administrator. Please do not disregard this notice, IMMEDIATE ACTION IS REQUIRED, your server contains a trojaned system library that is known to be used for password harvesting and key logging of SSH authentication passwords.
+
+EOF
+ls -al $clib >> $emlf
+
+cat >> $emlf <<EOF
+
+Recommendation:
+The best practice is to clean format and restore from known good backups. This compromise is potentially propagating through the use of login credentials supplied to 3rd party vendors. As such, it is imperative that all passwords used by this system, including root and administrative accounts, are not reused. Further, the SSH service should ideally be restricted to key-based authentication and firewall restricted to known trusted sources. For assistance with such tasks, please consult a qualified system administrator or your services provider.
+
+Further Reading:
+https://isc.sans.edu/diary/SSHD+rootkit+in+the+wild/15229
+https://forums.cpanel.net/f185/sshd-rootkit-323962.html
+
+--
+Linux Malware Detect v$ver < proj@rfxn.com >
+EOF
+
+cat $emlf | mail -s "[!!] ROOT COMPROMISE maldet alert from $(hostname) [!!]" $email_addr
+rm -f $emlf
+
+fi
+}
+
+clean() {
+file="$1"
+hitname="$2"
+v="$3"
+sh_hitname=`echo $hitname | sed -e 's/{HEX}//' -e 's/{MD5}//' | tr '.' ' ' | awk '{print$1"."$2"."$3}'`
+if [ -d "$cldir" ] && [ "$quar_clean" == "1" ] && [ -f "$file" ]; then
+	if [ -f "$cldir/$sh_hitname" ] && [ -f "$file.info" ]; then
+	        file_path=`cat $file.info | awk '{print$4}'`
+		eout "{clean} restoring $file for cleaning attempt" $v
+		restore "$file" >> /dev/null 2>&1
+		eout "{clean} trying to clean $file_path with $sh_hitname rule" $v
+		$(cat $cldir/$sh_hitname) $file_path
+		eout "{clean} rescanning $file_path for malware hits" $v
+		cleanst="1"
+		scan_stage1 "$file_path" >> /dev/null 2>&1
+		unset cleanst
+		if [ -f "$file_path" ]; then
+			echo "$file_path" >> $sessdir/clean.$$
+			echo "$file_path" >> $tmpdir/.clean.alltime
+			eout "{clean} clean successful on $file_path" $v
+		else
+			eout "{clean} clean failed on $file_path and returned to quarantine" $v
+		fi
+	elif [ -f "$cldir/$sh_hitname" ] && [ -f "$file" ]; then
+	        file_path="$file"
+		eout "{clean} trying to clean $file with $sh_hitname rule" $v
+		$(cat $cldir/$sh_hitname) $file_path
+		eout "{clean} scanning $file for malware hits" $v
+		cleanst="1"
+		unset clean_failed
+		scan_stage1 "$file_path" 1 >> /dev/null 2>&1
+		unset cleanst
+		if [ "$clean_failed" == "1" ]; then
+			eout "{clean} clean failed on $file" $v
+		else
+			echo "$file" >> $sessdir/clean.$$
+			echo "$file_path" >> $tmpdir/.clean.alltime
+			eout "{clean} clean successful on $file" $v
+		fi
+	fi
+else
+	eout "file path error on $file, aborting." $v
+	exit
+fi
+}
+
+restore() {
+ file="$1"
+ fname=`basename $file`
+ if [ -f "$quardir/$file" ] && [ -f "$quardir/$file.info" ]; then
+	file_owner=`cat $quardir/$file.info | awk '{print$1}'`
+	file_group=`cat $quardir/$file.info | awk '{print$2}'`
+	file_mode=`cat $quardir/$file.info | awk '{print$3}'`
+	file_path=`cat $quardir/$file.info | awk '{print$4}'`
+	chown $file_owner.$file_group "$quardir/$file" >> /dev/null 2>&1
+	chmod $file_mode "$quardir/$file" >> /dev/null 2>&1
+	mv -f "$quardir/$file" "$file_path"
+	eout "{restore} quarantined file $file restored to $file_path" 1
+ elif [ -f "$file" ] && [ -f "$file.info" ]; then
+        file_owner=`cat $file.info | awk '{print$1}'`
+        file_group=`cat $file.info | awk '{print$2}'`
+        file_mode=`cat $file.info | awk '{print$3}'`
+        file_path=`cat $file.info | awk '{print$4}'`
+        chown $file_owner.$file_group "$file" >> /dev/null 2>&1
+        chmod $file_mode "$file" >> /dev/null 2>&1
+        mv -f "$file" "$file_path"
+        eout "{restore} quarantined file $file restored to $file_path" 1
+ else
+	eout "{restore} invalid file or could not be found" 1
+ fi
+}
+
+restore_hitlist() {
+hitlist="$sessdir/session.hits.$1"
+if [ -f "$hitlist" ]; then
+ val_aquar=`tail -n1 $hitlist | awk '{print$5}'`
+ val_mquar=`tail -n1 $hitlist | awk '{print$3}'`
+ if [ "$val_aquar" ]; then
+  for file in `cat $hitlist | awk '{print$5}'`; do
+        if [ -f "$file" ]; then
+                restore $file
+        fi
+  done
+ elif [ "$val_mquar" ]; then
+  for file in `cat $hitlist | awk '{print$3}'`; do
+        quar_file=`cat $logf | grep -w "$file" | tail -n1 | awk '{print$12}' | tr -d "'"`
+        restore $quar_file
+  done
+ else
+	eout "{restore} could not find a valid hit list to restore." 1
+ fi
+fi
+}
+
+clean_hitlist() {
+hitlist="$sessdir/session.hits.$1"
+if [ -f "$hitlist" ]; then
+ for file in `cat $hitlist | awk '{print$3}'`; do
+	if [ -f "$file" ]; then
+          hitname=`cat $hitlist | grep $file | awk '{print$1}'`
+	  clean "$file" "$hitname" "$1"
+	else
+          hitname=`cat $hitlist | grep $file | awk '{print$1}'`
+	  quarfile=`cat $hitlist | grep $file | awk '{print$5}'`
+	  clean "$quarfile" "$hitname" "$1"
+	fi
+ done
+else
+	eout "{clean} invalid SCANID, aborting." 1
+	exit
+fi
+}
+
+quar_hitlist() {
+hitlist="$sessdir/session.hits.$1"
+if [ -f "$hitlist" ]; then
+ for file in `cat $hitlist | awk '{print$3}'`; do
+  if [ -f "$file" ]; then
+	file_owner=`stat -c "%U" "$file"`
+	file_group=`stat -c "%G" "$file"`
+	file_mode=`stat -c "%a" "$file"`
+	if [ "$pub" == "1" ]; then
+		chattr -ia "$file" >> /dev/null 2>&1
+		chmod 400 "$file"
+	else
+		chattr -ia "$file"
+		chmod 000 "$file"
+	fi
+	file_name=`basename "$file"`
+	file_namewc=`echo $file_name | $wc -m`
+	rnd="$RANDOM"
+	mv "$file" "$quardir/$file_name.$rnd"
+	echo "$file_owner $file_group $file_mode $file" > $quardir/$file_name.$rnd.info
+	eout "{quar} malware quarantined from '$file' to '$quardir/$file_name.$rnd'" 1
+	echo "$file => $quardir/$file_name.$rnd" >> $tmpdir/.quar.alltime    
+	if [ "$quar_susp" == "1" ]; then
+		quar_susp "$file"
+	fi
+	if [ "$quar_clean" == "1" ] && [ ! "$cleanst" == "1" ]; then
+		unset cleanst
+		hitname=`cat $hitlist | grep $file | awk '{print$1}'`
+		clean "$quardir/$file_name.$rnd" "$hitname" 1
+	fi
+
+  fi
+ done
+else
+	echo "{quar} invalid quarantine hit list, aborting."
+	exit
+fi
+}
+
+view_report() {
+ rid="$1"
+ if [ "$rid" == "list" ]; then
+	eout "Available Reports:"
+	for file in `ls /usr/local/maldetect/sess/session.[0-9]* 2> /dev/null`; do
+		SCANID=`cat $file | grep "SCAN ID"`
+		TIME=`cat $file | grep "TIME"`
+		if [ ! -z "$SCANID" ] && [ ! -z "$TIME" ]; then
+			echo "$TIME | $SCANID"
+		fi
+	done
+	exit
+ fi
+ if [ -f "$sessdir/session.$rid" ] && [ ! -z "$(echo $2 | grep '\@')" ]; then
+	cat $sessdir/session.$rid | mail -s "$email_subj" $2
+	eout "{report} report ID $rid sent to $2" 1
+	exit
+ fi
+ if [ "$rid" == "" ] && [ -f "$sessdir/session.last" ]; then
+	rid=`cat $sessdir/session.last`
+	$EDITOR $sessdir/session.$rid
+ elif [ -f "$sessdir/session.$rid" ]; then
+	$EDITOR $sessdir/session.$rid
+ else
+	echo "{report} no report found, aborting."
+	exit
+ fi
+}
+
+view() {
+	echo "Viewing last 50 lines from $logf:"
+	tail -n 50 $logf
+}
+
+purge() {
+	:> $logf
+	rm -f $tmpdir/* $quardir/* $sessdir/*
+	eout "{glob} logs and quarantine data cleared by user request (-p)" 1
+}
+
+
+quar_susp() {
+file="$1"
+user=`stat -c "%U" "$file"`
+user_id=`id -u $user`
+if [ ! "$user" == "" ] && [ "$user_id" -ge "$quar_susp_minuid" ]; then
+	if [ -f "/scripts/suspendacct" ]; then
+		if [ ! -f "/var/cpanel/suspended/$user" ]; then
+		 /scripts/suspendacct $user "maldet --report $datestamp.$$" >> /dev/null 2>&1
+		 eout "{quar} account $user cpanel suspended" 1
+		 echo "$user" >> $sessdir/suspend.users.$$
+                 echo "$user" >> $tmpdir/.susp.alltime
+		fi
+	else
+		if [ "$(grep $user /etc/passwd | cut -d':' -f7 | grep /bin/false)" == "" ]; then
+		 /usr/sbin/usermod -s /bin/false $user >> /dev/null 2>&1
+		 eout "{quar} account $user suspended; set 'usermod -s /bin/false'"
+                 echo "$user" >> $sessdir/suspend.users.$$
+                 echo "$user" >> $tmpdir/.susp.alltime
+		fi
+	fi	
+fi
+}
+
+quar() {
+file="$1"
+hitname="$2"
+if [ -f "$file" ] && [ -d "$quardir" ]; then
+ if [ "$quar_hits" == "1" ]; then
+  file_owner=`stat -c "%U" "$file"`
+  file_group=`stat -c "%G" "$file"`
+  file_mode=`stat -c "%a" "$file"`
+  file_name=`basename "$file"`
+  file_namewc=`echo $file_name | $wc -m`
+  rnd="$RANDOM"
+  if [ "$quar_susp" == "1" ]; then
+   quar_susp "$file"
+  fi
+  chattr -ia "$file"
+  mv "$file" "$quardir/$file_name.$rnd"
+  if [ "$pub" == "1" ]; then
+   chmod 400 "$quardir/$file_name.$rnd"
+  else
+   chmod 000 "$quardir/$file_name.$rnd"
+   chown root.root "$quardir/$file_name.$rnd"
+  fi
+  echo "$file_owner $file_group $file_mode $file" > $quardir/$file_name.$rnd.info
+  eout "{quar} malware quarantined from '$file' to '$quardir/$file_name.$rnd'"
+  echo "$file => $quardir/$file_name.$rnd" >> $tmpdir/.quar.alltime
+
+  if [ ! -z "$scan_session" ]; then
+   echo "$hitname : $file => $quardir/$file_name.$rnd" >> $scan_session
+  fi
+
+  if [ "$quar_clean" == "1" ] && [ ! "$cleanst" == "1" ]; then
+   unset cleanst
+   clean "$quardir/$file_name.$rnd" "$hitname"
+  fi
+
+ else
+  if [ ! -z "$scan_session" ]; then
+   echo "$hitname : $file" >> $scan_session
+  fi
+ fi
+else
+ eout "{quar} fatal error handling '$file'"
+fi
+}
+
+scan() {
+ spath="$1"
+ spath=`echo $spath | tr '?' '*'`
+ days=$2
+
+
+ if [ ! -f "$find" ]; then
+	eout "{scan} could not locate find command" 1
+	exit
+ fi
+ if [ ! -f "$ignore_paths" ]; then
+	touch $ignore_paths
+	chmod 640 $ignore_paths
+ elif [ ! -f "$ignore_sigs" ]; then
+	touch $ignore_sigs
+	chmod 640 $ignore_sigs
+ fi
+
+ if [ ! "$days" == "all" ]; then 
+ val=`echo $days | grep "[[:alpha:]]"`
+  if [ ! -z "$val" ]; then
+	eout "{scan} days value must be numeric value in the range of 1 - 60, reverting to default (7)." 1
+	days=7
+  elif [ "$days" -gt "60" ]; then
+	eout "{scan} days value must be numeric value in the range of 1 - 60, reverting to default (7)." 1
+	days=7
+  fi
+ fi
+
+ if [ ! -d $(echo $spath | tr '*' ' ' | awk '{print$1}') ] && [ ! -f $(echo $spath | tr '*' ' ' | awk '{print$1}') ]; then
+	eout "{scan} invalid path $spath" 1
+	exit
+ fi
+
+ scan_session=$tmpdir/.sess.$$
+ find_results=$tmpdir/.find.$$
+ touch $find_results
+ touch $scan_session
+
+ sigignore
+ hex_sigs=`$wc -l $dat_hexstring | awk '{print$1}'`
+ md5_sigs=`$wc -l $dat_md5hash | awk '{print$1}'`
+ tot_sigs=$[md5_sigs+hex_sigs]
+ if [ -z "$setmodsec" ]; then
+	 eout "{scan} signatures loaded: $tot_sigs ($md5_sigs MD5 / $hex_sigs HEX)" 1
+ fi
+
+ if [ -f "$ignore_file_ext" ]; then
+	if [ ! "$(cat $ignore_file_ext)" == "" ]; then
+		for i in `cat $ignore_file_ext`; do
+			if [ "$ignore_fext" == "" ]; then
+				ignore_fext="! -iname *$i"
+			else
+				ignore_fext="$ignore_fext ! -iname *$i"
+			fi
+		done
+	fi
+ fi
+ tmpdir_paths="/dev/shm /tmp /var/tmp"
+ if [ "$days" == "all" ]; then
+  if [ -z "$setmodsec" ]; then
+	  eout "{scan} building file list for $spath, this might take awhile..." 1
+  fi
+  $find $spath $tmpdir_paths -maxdepth $maxdepth -type f -size +${minfilesize}c -size -$maxfilesize $ignore_fext | grep -vf $ignore_paths > $find_results
+ else
+  if [ -z "$setmodsec" ]; then
+	  eout "{scan} building file list for $spath of new/modified files from last $days days, this might take awhile..." 1
+  fi
+  $find $spath $tmpdir_paths -maxdepth $maxdepth -type f -mtime -$days -size +${minfilesize}c -size -$maxfilesize $ignore_fext | grep -vf $ignore_paths > $find_results
+ fi
+ if [ ! -f "$find_results" ] || [ -z "$(cat $find_results)" ]; then
+  if [ -z "$setmodsec" ]; then
+	if [ "$days" == "all" ]; then
+	 eout "{scan} scan returned zero results, please provide a new path." 1
+	 exit
+	else
+	 eout "{scan} scan returned zero results, please increase days range or provide a new path." 1
+	 exit
+	fi
+  fi
+ fi
+
+ res_col="1"
+ move_to_col="echo -en \\033[${res_col}G"
+ tot_files=`$wc -l $find_results | awk '{print$1}'`
+ if [ -z "$setmodsec" ]; then
+	 eout "{scan} file list completed, found $tot_files files..." 1
+ fi
+ touch $sessdir/clean.$$
+ if [ ! -f "$scan_session" ]; then
+      touch $scan_session
+ fi
+
+ if [ ! -z "$setmodsec" ]; then
+	eout "{scan.modsec} scan of $spath in progress (id: $datestamp.$$)"
+ fi
+ cnt=0
+ clamscan=`which clamscan 2> /dev/null`
+ if [ -f "$clamscan" ] && [ "$clamav_scan" == "1" ]; then
+	if [ -z "$setmodsec" ]; then
+		eout "{scan} found ClamAV clamscan binary, using as scanner engine..." 1
+	fi
+	if [ "$string_length_scan" == "1" ]; then
+		if [ -z "$setmodsec" ]; then
+			eout "{scan} preprocessing file list for string length hits..." 1
+			scan_strlen list "$find_results" >> /dev/null 2>&1
+		fi
+	fi
+	if [ -d "/var/lib/clamav" ]; then
+		clamav_db="-d /var/lib/clamav"
+	elif [ -d "/var/clamav" ]; then
+		clamav_db="-d /var/clamav"
+	fi
+        if [ -z "$setmodsec" ]; then
+		eout "{scan} scan of $spath ($tot_files files) in progress..." 1
+	fi
+	for hit in `$clamscan -d $inspath/sigs/rfxn.ndb -d $inspath/sigs/rfxn.hdb $clamav_db -r --infected --no-summary -f $find_results 2> /dev/null | tr -d ':' | sed 's/.UNOFFICIAL//' | awk '{print$2":"$1}'`; do
+		file=`echo $hit | tr ':' ' ' | awk '{print$2}'`
+		signame=`echo $hit | tr ':' ' ' | awk '{print$1}'`
+		clamsig=`echo $signame | grep -iE "HEX|MD5"`
+		if [ -z "$clamsig" ]; then
+			signame="{CAV}$signame"
+		fi
+		quar "$file" "$signame"
+		if [ ! "$set_background" == "1" ]; then
+        	  tot_hit=`$wc -l $scan_session | awk '{print$1}'`
+	          cl_hit=`$wc -l $sessdir/clean.$$ | awk '{print$1}'`
+		  if [ -z "$setmodsec" ]; then
+	        	  $move_to_col && echo -n "maldet($$): {scan} processing scan results for hits: $tot_hit hits $cl_hit cleaned"
+		  fi
+		  cnt=$tot_files
+		fi
+	done
+ else
+  for i in `cat $find_results | tr ' ' '%'`; do
+   i=`echo $i | tr '%' ' '`
+   cnt=$[cnt+1]
+   if [ ! -f "$scan_session" ]; then
+	touch $scan_session
+   fi
+
+  if [ -z "$setmodsec" ]; then
+   if [ ! "$set_background" == "1" ]; then
+	  tot_hit=`$wc -l $scan_session | awk '{print$1}'`
+	  cl_hit=`$wc -l $sessdir/clean.$$ | awk '{print$1}'`
+	  $move_to_col && echo -n "maldet($$): {scan} $cnt/$tot_files files scanned: $tot_hit hits $cl_hit cleaned"
+   fi
+  fi
+   if [ -f "$i" ]; then
+    scan_stage1 "$i" >> /dev/null 2>&1
+   fi
+  done
+ fi
+
+  if [ -z "$setmodsec" ]; then
+   echo
+  fi
+  tot_hit=`$wc -l $scan_session | awk '{print$1}'`
+  cl_hit=`$wc -l $sessdir/clean.$$ | awk '{print$1}'`
+  gen_report
+
+  if [ ! -z "$setmodsec" ]; then
+   if [ ! "$tot_hit" == "0" ]; then
+	echo "0 maldet: $hitname $spath"
+        eout "{scan.modsec} results returned FAIL hit found on $spath (id: $datestamp.$$)"
+   else
+	echo "1 maldet: OK"
+        eout "{scan.modsec} results returned OK on $spath (id: $datestamp.$$)"
+   fi
+  else
+   eout "{scan} scan completed on $spath: files $tot_files, malware hits $tot_hit, cleaned hits $cl_hit" 1
+   eout "{scan} scan report saved, to view run: maldet --report $datestamp.$$" 1
+   if [ "$quar_hits" == "0" ] && [ ! "$tot_hit" == "0" ]; then
+    eout "{scan} quarantine is disabled! set quar_hits=1 in conf.maldet or to quarantine results run: maldet -q $datestamp.$$" 1
+   fi
+  fi
+
+  if [ ! "$tot_hit" == "0" ]; then
+        if [ "$suppress_cleanhit" == "1" ] && [ ! "$tot_hit" == "$cl_hit" ]; then
+         alert file $nsess
+        elif [ "$suppress_cleanhit" == "0" ]; then
+         alert file $nsess
+        fi
+  fi
+  mv $scan_session $nsess_hits
+  rm -f $find_results $scan_session
+}
+
+scan_strlen() {
+type=$1
+file=$2
+if [ "$string_length_scan" == "1" ] && [ "$type" == "file" ]; then
+	flen=`$wc -L $file 2> /dev/null | awk '{print$1}'`
+	if [ "$flen" -ge "$string_length" ]; then
+		eout "{strlen} malware string length hit on $file"
+		quar "$file" "{SA}stat.strlength"
+	fi
+elif [ "$string_length_scan" == "1" ] && [ "$type" == "list" ]; then
+        list=$tmpdir/.strlen.flist.$$
+        cp $file $list
+        sed -i "s/'/\\\\'/g" $list
+        cat $list | xargs wc -L 2> /dev/null | grep -vw total >> $list.strlen
+        awk "{if (\$1>=$string_length) print\$2}" $list.strlen >> $list.hits
+        for i in `cat $list.hits`; do
+                if [ -f "$i" ]; then
+                        eout "{strlen} malware string length hit on $i"
+                        quar "$i" "{SA}stat.strlength"
+                fi
+        done
+        rm -f $list.strlen $list.hits $list
+fi
+}
+
+scan_stage1() {
+ file="$1"
+ clchk="$2"
+ hash=`$md5sum "$file" | awk '{print$1}'`
+ if  [ ! -z "$hash" ]; then
+  val_hash=`grep -m1 $hash $dat_md5hash`
+  if [ ! -z "$val_hash" ]; then
+	md5_hit=$hash
+	md5_hitname=`echo $val_hash | cut -d':' -f2`
+	eout "{md5hash} malware hit $md5_hitname on $file"
+	if [ "$clchk" == "1" ]; then
+		clean_failed=1
+	else
+		quar "$file" "$md5_hitname"
+	fi
+	unset val_hash md5_hit md5_hitname
+  else
+	if [ -f "$file" ]; then
+		scan_stage2 "$file" $clchk >> /dev/null 2>&1
+	fi
+	if [ -f "$file" ]; then
+		scan_strlen file "$file" >> /dev/null 2>&1
+	fi
+  fi
+ else
+	eout "{scan} error could not read or hash $file, do we have permission?"
+ fi
+}
+
+scan_stage2() {
+ file="$1"
+ clchk="$2"
+ ftype=`file -b "$file" | egrep "core file|compressed data|archive data"`
+ if [ -z "$ftype" ]; then
+	if [ -p "$hex_fifo" ] && [ "$hex_fifo_scan" == "1" ]; then
+                if [ "$OSTYPE" == "FreeBSD" ]; then
+                        $od -v -N$hex_fifo_depth -tx1 "$file" | cut -c12-256 | tr -d ' \n' > $hex_fifo 2>&1 &
+                else
+                        $od -v -w64 -N$hex_fifo_depth -tx1 "$file" | cut -c9-256 | tr -d '\n ' > $hex_fifo 2>&1 &
+                fi
+	        val_hex=`$perl $hexmfifo_pl`
+	else
+                if [ "$OSTYPE" == "FreeBSD" ]; then
+                        val_hex=`$perl $hexm_pl $($od -v -N$hexdepth -tx1 "$file" | cut -c12-256 | tr -d ' \n')`
+                else
+                        val_hex=`$perl $hexm_pl $($od -v -w$hexdepth -N$hexdepth -tx1 "$file" | tr -d '\n ')`
+                fi
+	fi
+  if [ ! -z "$val_hex" ]; then
+	hex_hit=`echo $val_hex | awk '{print$1}'`
+	hex_hitname=`echo $val_hex | awk '{print$2}'`
+	eout "{hexstring} malware hit $hex_hitname on $file"
+        if [ "$clchk" == "1" ]; then
+                clean_failed=1
+	else
+		quar "$file" "$hex_hitname"
+	fi
+	unset val_hex hex_hit hex_hitname
+  fi
+ fi
+}
+
+gen_report() {
+if [ -f "$scan_session" ]; then
+ tot_hit=`$wc -l $scan_session | awk '{print$1}'`
+ nsess_hits=$sessdir/session.hits.$datestamp.$$
+ echo "$datestamp.$$" > $sessdir/session.last
+ nsess=$sessdir/session.$datestamp.$$
+ cat >> $nsess <<EOF
+malware detect scan report for $(hostname):
+SCAN ID: $datestamp.$$
+TIME: $(date +"%b %e %H:%M:%S %z")
+PATH: $spath
+EOF
+if [ ! "$days" == "all" ]; then
+cat >> $nsess <<EOF
+RANGE: $days days
+EOF
+fi
+cat >> $nsess <<EOF
+TOTAL FILES: $tot_files
+TOTAL HITS: $tot_hit
+TOTAL CLEANED: $cl_hit
+
+EOF
+if [ "$quar_hits" == "0" ] && [ ! "$tot_hit" == "0" ]; then
+cat >> $nsess <<EOF
+NOTE: quarantine is disabled! set quar_hits=1 in conf.maldet or to quarantine results run: maldet -q $datestamp.$$
+EOF
+fi
+ if [ "$quar_clean" -ne "0" ]; then
+  if [ -f "$sessdir/clean.$$" ] && [ ! -z "$(cat $sessdir/clean.$$)" ]; then
+cat >> $nsess <<EOF
+CLEANED & RESTORED FILES:
+$(cat $sessdir/clean.$$)
+
+EOF
+  fi
+ fi
+ if [ "$quar_susp" -ne "0" ]; then
+   if [ -f "$sessdir/suspend.users.$$" ] && [ ! -z "$(cat $sessdir/suspend.users.$$)" ]; then
+cat >> $nsess <<EOF
+SUSPENDED ACCOUNTS:
+$(cat $sessdir/suspend.users.$$)
+
+EOF
+   fi
+ fi 
+ if [ "$tot_hit" -ne "0" ]; then
+  echo "FILE HIT LIST:" >> $nsess
+  cat $scan_session >> $nsess
+ fi
+cat >> $nsess <<EOF
+===============================================
+Linux Malware Detect v$ver < proj@rfxn.com >
+EOF
+fi
+}
+
+trim_log() {
+log=$1
+logtrim=$2
+if [ -f "$log" ]; then
+  log_size=`$wc -l $log | awk '{print$1}'`
+  if [ "$log_size" -gt "$logtrim" ]; then
+    trim=$[logtrim/10]
+    printf "%s\n" "$trim,${log_size}d" w | ed -s $log
+  fi
+fi
+}
+
+alert() {
+type=$1
+file="$2"
+
+if [ "$email_alert" == "1" ]; then
+ if [ "$type" == "file" ] && [ -f "$file" ]; then
+
+  cat $file | $mail -s "$email_subj" $email_addr
+  if [ ! "$(whoami)" == "root" ] && [ -z "$(echo $2 | grep '\@')" ]; then
+	if [ -z "$setmodsec" ]; then
+	  eout "{alert} sent scan report to config default $email_addr" 1
+	  eout "{alert} send scan report to an alternate address with: maldet --report $datestamp.$$ you@domain.com" 1
+	else
+	  eout "{alert} sent scan report to config default $email_addr"
+	fi
+  else
+	  eout "{alert} sent scan report to $email_addr" 1
+  fi
+ elif [ "$type" == "daily" ]; then
+  rm -f $tmpdir/.daily.alert.hits $tmpdir/.daily.clean.hits $tmpdir/.daily.monitor.alert $tmpdir/.daily.susp.hits
+
+  scan_session=`cat $sessdir/session.monitor.current`
+  $tlog $scan_session daily.alert > $tmpdir/.daily.alert.hits
+  $tlog $tmpdir/.clean.alltime daily.clean.alert > $tmpdir/.daily.clean.hits
+  $tlog $tmpdir/.monitor.scanned.alltime daily.monitor.alert > $tmpdir/.daily.monitor.alert
+  $tlog $tmpdir/.susp.alltime daily.susp.alert > $tmpdir/.daily.susp.hits
+
+  tot_hits=`$wc -l $tmpdir/.daily.alert.hits | awk '{print$1}'`
+  tot_cl=`$wc -l $tmpdir/.daily.clean.hits | awk '{print$1}'`
+  tot_files=`$wc -l $tmpdir/.daily.monitor.alert | awk '{print$1}'`
+  tot_susp=`$wc -l $tmpdir/.daily.susp.hits | awk '{print$1}'`
+
+  trim_log $tmpdir/.monitor.scanned.alltime 5000
+  trim_log $tmpdir/.clean.alltime 5000
+  trim_log $tmpdir/.quar.alltime 5000
+  trim_log $tmpdir/.susp.alltime 5000
+
+  $tlog $sessdir/session.hits.$datestamp.$$ daily.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.clean.alltime daily.clean.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.monitor.scanned.alltime daily.monitor.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.susp.alltime daily.susp.alert >> /dev/null 2>&1
+
+  if [ ! -z "$(cat $tmpdir/.daily.alert.hits)" ]; then
+   tmpf=$tmpdir/.alert
+   rm -f $tmpf
+if [ "$tot_hits" -gt "$tot_files" ]; then
+	tot_files=$tot_hits
+fi
+cat >> $tmpf <<EOF
+malware detect $type monitor report for $(hostname):
+SCAN ID: $datestamp.$$
+TIME: $(date +"%b %e %H:%M:%S %z")
+TOTAL FILES: $tot_files
+TOTAL HITS: $tot_hits
+TOTAL CLEANED: $tot_cl
+
+EOF
+if [ -f "$tmpdir/.daily.clean.hits" ] && [ ! "$tot_cl" == "0" ]; then
+cat >> $tmpf <<EOF
+CLEANED & RESTORED FILES:
+$(cat $tmpdir/.daily.clean.hits)
+
+EOF
+fi
+if [ -f "$tmpdir/.daily.susp.hits" ] && [ ! "$tot_susp" == "0" ]; then
+cat >> $tmpf <<EOF
+SUSPENDED ACCOUNTS:
+$(cat $tmpdir/.daily.susp.hits)
+
+EOF
+fi
+
+cat >> $tmpf <<EOF
+FILE HIT LIST:
+$(cat $tmpdir/.daily.alert.hits)
+===============================================
+Linux Malware Detect v$ver < proj@rfxn.com >
+EOF
+   cp $tmpf $sessdir/session.$datestamp.$$
+   echo "$datestamp.$$" > $sessdir/session.last
+   email_subj="$email_subj :: $type"
+   cat $tmpf | $mail -s "$email_subj" $email_addr
+   eout "{alert} sent $type alert to $email_addr"
+   rm -f $tmpf $tmpdir/.daily.alert.hits $tmpdir/.daily.clean.hits $tmpdir/.daily.monitor.alert $tmpdir/.daily.susp.hits
+  fi
+ elif [ "$type" == "weekly" ]; then
+  rm -f $tmpdir/.weekly.alert.hits $tmpdir/.weekly.clean.hits $tmpdir/.weekly.monitor.alert $tmpdir/.daily.susp.hits
+
+
+  scan_session=`cat $sessdir/session.monitor.current`
+  $tlog $scan_session weekly.alert > $tmpdir/.weekly.alert.hits
+  $tlog $tmpdir/.clean.alltime weekly.clean.alert > $tmpdir/.weekly.clean.hits
+  $tlog $tmpdir/.monitor.scanned.alltime weekly.monitor.alert > $tmpdir/.weekly.monitor.alert
+  $tlog $tmpdir/.susp.alltime weekly.susp.alert > $tmpdir/.weekly.susp.hits
+
+  tot_hits=`$wc -l $tmpdir/.weekly.alert.hits | awk '{print$1}'`
+  tot_cl=`$wc -l $tmpdir/.weekly.clean.hits | awk '{print$1}'`
+  tot_files=`$wc -l $tmpdir/.weekly.monitor.alert | awk '{print$1}'`
+  tot_susp=`$wc -l $tmpdir/.weekly.susp.hits | awk '{print$1}'`
+
+  trim_log $tmpdir/.monitor.scanned.alltime 5000
+  trim_log $tmpdir/.clean.alltime 5000
+  trim_log $tmpdir/.quar.alltime 5000
+  trim_log $tmpdir/.susp.alltime 5000
+
+  $tlog $sessdir/session.hits.$datestamp.$$ weekly.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.clean.alltime weekly.clean.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.monitor.scanned.alltime weekly.monitor.alert >> /dev/null 2>&1
+  $tlog $tmpdir/.susp.alltime weekly.susp.alert >> /dev/null 2>&1
+
+  if [ ! -z "$(cat $tmpdir/.weekly.alert.hits)" ]; then
+   tmpf=$tmpdir/.alert
+   rm -f $tmpf
+if [ "$tot_hits" -gt "$tot_files" ]; then
+	tot_files=$tot_hits
+fi
+cat >> $tmpf <<EOF
+malware detect $type monitor report for $(hostname):
+SCAN ID: $datestamp.$$
+TIME: $(date +"%b %e %H:%M:%S %z")
+TOTAL FILES: $tot_files
+TOTAL HITS: $tot_hits
+TOTAL CLEANED: $tot_cl
+
+EOF
+if [ -f "$tmpdir/.weekly.clean.hits" ] && [ ! "$tot_cl" == "0" ]; then
+cat >> $tmpf <<EOF
+CLEANED & RESTORED FILES:
+$(cat $tmpdir/.weekly.clean.hits)
+
+EOF
+fi
+if [ -f "$tmpdir/.weekly.susp.hits" ] && [ ! "$tot_susp" == "0" ]; then
+cat >> $tmpf <<EOF
+SUSPENDED ACCOUNTS:
+$(cat $tmpdir/.weekly.susp.hits)
+
+EOF
+fi
+
+cat >> $tmpf <<EOF
+FILE HIT LIST:
+$(cat $tmpdir/.weekly.alert.hits)
+===============================================
+Linux Malware Detect v$ver < proj@rfxn.com >
+EOF
+   echo "$datestamp.$$" > $sessdir/session.last
+   cp $tmpf $sessdir/session.$datestamp.$$
+   email_subj="$email_subj :: $type"
+   cat $tmpf | $mail -s "$email_subj" $email_addr
+   eout "{alert} sent $type alert to $email_addr"
+   rm -f $tmpf $tmpdir/.weekly.alert.hits $tmpdir/.weekly.clean.hits $tmpdir/.weekly.monitor.alert $tmpdir/.weekly.susp.hits
+  fi
+ else
+        eout "{alert} file input error, alert discarded."
+ fi
+
+fi
+}
+
+monitor_kill() {
+	touch $tmpdir/stop_monitor
+        inotify_pid=`pidof inotifywait`
+	if [ -f "$tmpdir/monitor.pid" ]; then
+	  monitor_pid=`cat $tmpdir/monitor.pid`
+	fi
+        kill -9 $inotify_pid $monitor_pid >> /dev/null 2>&1
+        killall -9 inotifywait >> /dev/null 2>&1
+        exit
+}
+
+monitor_cycle() {
+ echo $$ > $tmpdir/monitor.pid
+ if [ ! -f "$tmpdir/stop_monitor" ]; then
+	 inotify_pid=`pidof inotifywait`
+	 if [ -z "$inotify_pid" ]; then
+	        eout "{mon} no inotify process found, exiting (are we a zombie process?)" 1
+	        exit
+	 fi
+         log_size=`$wc -l $inotify_log | awk '{print$1}'`
+         if [ "$log_size" -ge "$inotify_trim" ]; then
+                trim=1000
+                printf "%s\n" "$trim,${log_size}d" w | ed -s $inotify_log
+                eout "{mon} inotify log file trimmed"
+         fi
+	 sleep $inotify_stime
+	 monitor_check
+ else
+	rm -f $tmpdir/stop_monitor
+	eout "{mon} monitoring terminated by user, inotify killed."
+	exit
+ fi
+}
+
+monitor_check() {
+for file in `$tlog $inotify_log inotify | grep -E "CREATE|MODIFY|MOVED_FROM|MOVED_TO" | awk '{print$1}' | sort | uniq | tr ' ' '%'`; do
+ file=`echo $file | tr '%' ' '`
+ if [ -f "$file" ]; then
+  sigignore 1
+  echo "$file" >> $tmpdir/.monitor.scanned.alltime
+  eout "{mon} inotify file scan $file"
+  scan_stage1 "$file" >> /dev/null 2>&1
+## CREATE,ISDIR: directory check for running inotifywait without -r
+# elif [ -d "$file" ]; then
+#  sigignore 1
+#  eout "{mon} inotify directory scan $file"
+#  find $file -maxdepth $maxdepth -type f -mmin -5 -size +${minfilesize}c -size -$maxfilesize > $tmpdir/.mmin.find.$$
+#  for dirfile in `cat $tmpdir/.mmin.find.$$ | tr ' ' '%'`; do
+#    dirfile=`echo $dirfile | tr '%' ' '`
+#    echo "$dirfile" >> $tmpdir/.monitor.scanned.alltime
+#    eout "{mon} inotify file scan $dirfile"
+#    scan_stage1 "$dirfile" >> /dev/null 2>&1
+#  done
+#  rm -f $tmpdir/.mmin.find.$$
+##
+ fi
+done
+monitor_cycle
+}
+
+monitor_init() {
+inopt="$1"
+scan_session=$sessdir/session.hits.$datestamp.$$
+touch $scan_session
+echo "$scan_session" > $sessdir/session.monitor.current
+
+if [ "$inopt" == "" ]; then
+	eout "invalid usage of -m|--monitor, aborting." 1
+	exit
+fi
+
+if [ ! -f "$inotify" ]; then
+ eout "{mon} could not find inotify command" 1
+ exit
+fi
+
+if [ -f "/boot/System.map-$(uname -r)" ]; then
+	ksup=`grep -i inotify_ /boot/System.map-$(uname -r)`
+	if [ -z "$ksup" ]; then
+		eout "{mon} kernel does not support inotify(), aborting." 1
+		exit
+	fi
+elif [ -f "/boot/config-$(uname -r)" ]; then
+	ksup=`grep -m1 CONFIG_INOTIFY /boot/config-$(uname -r)`
+	if [ -z "$ksup" ]; then
+		eout "{mon} kernel does not support inotify(), aborting." 1
+		exit
+	fi
+fi
+
+inotify_pid=`pidof inotifywait`
+if [ ! -z "$inotify_pid" ]; then
+	eout "{mon} existing inotify process detected (try -k): $inotify_pid" 1
+	exit
+fi
+
+rm -f $tmpdir/stop_monitor $tmpdir/inotifywait.pid
+
+procs=`cat /proc/cpuinfo  | grep -c processor`
+users_tot=`cat /etc/passwd | grep -ic home`
+inotify_user_watches=$[inotify_base_watches*users_tot]
+eout "{mon} set inotify max_user_instances to 128" 1
+echo 128 > /proc/sys/fs/inotify/max_user_instances
+eout "{mon} set inotify max_user_watches to $inotify_user_watches" 1
+echo $inotify_user_watches > /proc/sys/fs/inotify/max_user_watches 
+
+icnt=0
+inotify_fpaths=$sessdir/inotify.paths.$$
+rm -f $inotify_fpaths
+touch $inotify_log
+chmod 640 $inotify_log
+
+if [ "$(echo $inopt | grep -E "users|user|USERS|USER")" ]; then
+ for i in `cat /etc/passwd | cut -d':' -f1,3,6`; do
+  user=`echo $i | cut -d':' -f1`
+  user_id=`echo $i | cut -d':' -f2`
+  user_home=`echo $i | cut -d':' -f3`
+  icnt=$[icnt+1]
+
+  if [ "$user_id" -ge "$inotify_minuid" ]; then
+  if [ ! -z "$inotify_webdir" ] && [ -d "$user_home/$inotify_webdir" ]; then
+	echo "$user_home/$inotify_webdir" >> $inotify_fpaths
+	eout "{mon} added $user_home/$inotify_webdir to inotify monitoring array" 1
+   elif [ -d "$user_home" ]; then
+	echo "$user_home" >> $inotify_fpaths
+	eout "{mon} added $user_home to inotify monitoring array" 1
+   else
+ 	eout "{mon} could not find any suitable user home paths"
+   fi
+  fi
+ done
+
+ if [ -d "/dev/shm" ]; then
+	echo "/dev/shm" >> $inotify_fpaths
+	eout "{mon} added /dev/shm to inotify monitoring array" 1
+ fi
+ if [ -d "/var/tmp" ]; then
+	echo "/var/tmp" >> $inotify_fpaths
+	eout "{mon} added /var/tmp to inotify monitoring array" 1
+ fi
+ if [ -d "/tmp" ]; then
+	echo "/tmp" >> $inotify_fpaths
+	eout "{mon} added /tmp to inotify monitoring array" 1
+ fi
+elif [ -f "$inopt" ]; then
+	tot_paths=`$wc -l $inotify_fpaths | awk '{print$1}'`
+	if [ "$tot_paths" == "0" ]; then
+		eout "{mon} no paths specified in $inopt, aborting." 1
+		exit
+	fi
+        for i in `cat $inopt`; do
+                if [ -d "$i" ]; then
+                        eout "{mon} added $i to inotify monitoring array" 1
+                        echo "$i" >> $inotify_fpaths
+                else
+                        eout "{mon} ignored invalid path $i" 1
+                fi
+        done
+
+elif [ -d "$inopt" ] || [ "$(echo $inopt | grep -E ".*,.*")" ]; then
+	for i in `echo $inopt | tr ',' '\n'`; do
+		if [ -d "$i" ]; then
+			eout "{mon} added $i to inotify monitoring array" 1
+			echo "$i" >> $inotify_fpaths
+		else
+			eout "{mon} invalid path $i specified, ignoring." 1
+		fi
+	done
+else
+	eout "{mon} no valid option or invalid file/path provided, aborting." 1
+	exit
+fi
+
+if [ -f "$ignore_inotify" ]; then
+ cnt=`$wc -l $ignore_inotify | awk '{print$1}'`
+ if [ "$cnt" > "0" ]; then
+  for igfile in `cat $ignore_inotify`; do
+    if [ "$igregexp" ]; then
+	igregexp="$igregexp|$igfile"
+    else
+	igregexp="($igfile"
+    fi
+  done
+  igregexp="$igregexp)"
+  exclude="--exclude $igregexp"
+ fi
+fi
+
+tot_paths=`$wc -l $inotify_fpaths | awk '{print$1}'`
+eout "{mon} starting inotify process on $tot_paths paths, this might take awhile..." 1
+$nice -n $inotify_nice $inotify -d -r -o $inotify_log --fromfile $inotify_fpaths $exclude --timefmt "%d %b %H:%M:%S" --format "%w%f %e %T" -m -e create,move,modify >> /dev/null 2>&1 &
+sleep 2
+inotify_pid=`pidof inotifywait`
+if [ -z "$inotify_pid" ]; then
+        eout "{mon} no inotify process found, check $inotify_log for errors." 1
+	exit
+else
+        eout "{mon} inotify startup successful (pid: $inotify_pid)" 1
+	eout "{mon} inotify monitoring log: $inotify_log" 1
+        echo "$inotify_pid" > $tmpdir/inotifywait.pid
+fi
+monitor_cycle >> /dev/null 2>&1 &
+}
+
+checkout() { 
+file="$1"
+host=ftp.rfxn.com
+user=anonymous
+passwd=anonymous
+upath=incoming
+
+cfile="$(pwd)/$file"
+if [ -f "$cfile" ]; then
+	file=$cfile
+fi
+
+if [ -f "$file" ]; then
+
+eout "{checkout} uploading $file to $host" 1
+
+ftp -v -n -i $host << EOT
+user $user@rfxn.com $passwd
+prompt
+cd $upath
+lcd $lcd
+binary
+put "$file" "$RANDOM.$$.bin"
+ascii
+put "$file" "$RANDOM.$$.ascii"
+bye
+EOT
+
+elif [ -d "$file" ]; then
+	for i in `find $file -type f`; do
+ftp -v -n -i $host << EOT
+user $user $passwd
+prompt
+cd $upath
+lcd $lcd
+binary
+put "$i" "$RANDOM.$$.bin"
+ascii
+put "$i" "$RANDOM.$$.ascii"
+bye
+EOT
+	done
+fi
+
+
+}
+
+sigignore() {
+sil=$1
+	chk=`$wc -l $ignore_sigs | awk '{print$1}'`
+	if [ ! "$chk" == "0" ]; then
+	   cat $dat_hexstring | grep -vf $ignore_sigs > $dat_hexstring.new
+	   mv $dat_hexstring.new $dat_hexstring
+	   cat $dat_md5hash | grep -vf $ignore_sigs > $dat_md5hash.new
+	   mv $dat_md5hash.new $dat_md5hash
+	   chmod 640 $dat_md5hash $dat_hexstring
+	   if [ "$sil" == "1" ]; then
+		   eout "{glob} processed $chk signature ignore entries"
+	   else
+		   eout "{glob} processed $chk signature ignore entries" 1
+	   fi
+        fi
+}
+
+
+lmdup() {
+ofile=$tmpdir/.lmdup_vercheck.$$
+tmp_inspath=/usr/local/lmd_update
+rm -rf $tmp_inspath
+rm -f $ofile
+
+mkdir -p $tmp_inspath
+chmod 750 $tmp_inspath
+
+eout "{update} checking for available updates..." 1
+
+$wget --referer="http://www.rfxn.com/LMD-$rver" -q -t5 -T5 "$lmdurl_ver" -O $ofile >> /dev/null 2>&1
+if [ -s "$ofile" ]; then
+	installed_ver=`echo $ver | tr -d '.'`
+	current_ver=`cat $ofile | tr -d '.'`
+	current_hver=`cat $ofile`
+	if [ "$current_ver" -gt "$installed_ver" ]; then
+		eout "{update} new version $current_hver found, updating..." 1
+		$wget --referer="http://www.rfxn.com/LMD-$rver" -q -t5 -T5 "http://www.rfxn.com/downloads/maldetect-current.tar.gz" -O "$tmp_inspath/maldetect-current.tar.gz"
+		if [ -f "$tmp_inspath/maldetect-current.tar.gz" ]; then
+		 cd $tmp_inspath/
+		 tar xfz maldetect-current.tar.gz
+		 cd maldetect-*
+		 chmod 750 install.sh
+		 sh -c './install.sh' >> /dev/null 2>&1
+		 eout "{update} completed update v$ver => v$current_hver, running signature updates..." 1
+		 $inspath/maldet --update 1
+		 eout "{update} update and config import completed." 1
+		else
+			eout "{update} could not download maldetect-current.tar.gz, please try again later." 1
+			exit
+		fi
+	else
+		eout "{update} hashing install files and checking against server..." 1
+		md5sum $inspath/maldet $inspath/internals.conf $inspath/inotify/tlog $inspath/inotify/inotifywait $inspath/clean/* | awk '{print$1}' | tr '\n' ' ' | tr -d ' ' > $lmd_hashf
+		ofile_hash=$tmpdir/.lmdup_hashcheck
+		$wget --referer="http://www.rfxn.com/LMD-$rver" -q -t5 -T5 "$lmdurl_hash" -O $ofile_hash >> /dev/null 2>&1
+		if [ -f "$ofile_hash" ]; then
+			installed_hash=`cat $lmd_hashf`
+			current_hash=`cat $ofile_hash`
+			if [ ! "$installed_hash" == "$current_hash" ]; then
+				eout "{update} version check shows latest but hash check failed, forcing update..." 1
+		                $wget --referer="http://www.rfxn.com/LMD-$rver" -q -t5 -T5 "http://www.rfxn.com/downloads/maldetect-current.tar.gz" -O "$tmp_inspath/maldetect-current.tar.gz"
+	        	        if [ -f "$tmp_inspath/maldetect-current.tar.gz" ]; then
+	                	 cd $tmp_inspath/
+	        	         tar xfz maldetect-current.tar.gz
+		                 cd maldetect-*
+        		         chmod 750 install.sh
+		                 sh -c './install.sh' >> /dev/null 2>&1
+        	        	 eout "{update} completed update v$ver => v$current_hver, running signature updates..." 1
+        		         $inspath/maldet --update 1
+	                	 eout "{update} update and config import completed." 1
+                		else
+        	                 eout "{update} could not download maldetect-current.tar.gz, please try again later." 1
+	                         exit
+				fi
+			else
+				eout "{update} latest version already installed." 1
+			fi
+		else
+			eout "{update} latest version already installed." 1
+		fi
+	fi
+else
+	eout "{update} could not download version file from server, please try again later." 1
+	exit
+fi
+
+rm -rf $tmp_inspath $ofile $ofile_hash
+}
+
+sigup() {
+check_clibkeyutils
+eout "{sigup} performing signature update check..." 1
+if [ -z "$def_ver" ]; then
+	eout "{sigup} could not determine signature version" 1
+	def_ver=0
+else
+	eout "{sigup} local signature set is version $def_ver" 1
+fi
+
+if [ ! -f "$wget" ]; then
+	eout "{sigup} could not locate wget command" 1
+	exit
+fi
+
+tmpf="$tmpdir/.hver$$"
+$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_ver -O $tmpf
+if [ ! -f "$tmpf" ]; then
+	eout "{sigup} could not download signature data from server, please try again later." 1
+	exit
+fi
+if [ -z $(cat $tmpf) ]; then
+	eout "{sigup} could not download signature data from server, please try again later." 1
+	exit
+fi
+
+nver=`cat $tmpf`
+
+if [ -f "$dat_md5hash" ]; then
+	lines_md5=`cat $dat_md5hash | $wc -l | awk '{print$1}'`
+else
+	lines_md5=0
+fi
+if [ -f "$dat_hexstring" ]; then
+	lines_hex=`cat $dat_hexstring | $wc -l | awk '{print$1}'`
+else
+	lines_hex="0"
+fi
+
+if [ ! -f "$dat_md5hash" ] || [ ! -f "$dat_hexstring" ]; then
+	def_ver=2013041200000
+	eout "{sigup} signature files missing or corrupted, forcing update..." 1
+elif [ "$lines_md5" -lt "1000" ] || [ "$lines_hex" -lt "1000" ]; then
+	def_ver=2013041200000
+	eout "{sigup} signature files corrupted, forcing update..." 1
+fi
+
+if [ "$nver" != "$def_ver" ]; then
+	eout "{sigup} new signature set ($nver) available" 1
+
+	$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_md5hash -O $dat_md5hash
+	eout "{sigup} downloaded $defurl_md5hash" 1
+
+	$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_hex -O $dat_hexstring
+	eout "{sigup} downloaded $defurl_hex" 1
+
+	$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_hex_cav -O $dat_hex_cav
+	eout "{sigup} downloaded $defurl_hex_cav" 1
+
+	$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_md5_cav -O $dat_md5_cav
+	eout "{sigup} downloaded $defurl_md5_cav" 1
+
+	$wget --referer="http://www.rfxn.com/LMD-$rver" -t5 -T5 -q $defurl_cl -O $tmpdir/maldet-clean.tgz
+	cd $tmpdir/
+	tar xfz $tmpdir/maldet-clean.tgz
+	cp -f $tmpdir/clean/* $cldir
+	rm -rf $tmpdir/maldet-clean.tgz $tmpdir/clean
+        eout "{sigup} downloaded $defurl_cl" 1
+
+	cat $tmpf > $def_verf
+	eout "{sigup} signature set update completed" 1
+	sigignore
+	hex_sigs=`$wc -l $dat_hexstring | awk '{print$1}'`
+	md5_sigs=`$wc -l $dat_md5hash | awk '{print$1}'`
+	tot_sigs=$[md5_sigs+hex_sigs]
+	eout "{sigup} $tot_sigs signatures ($md5_sigs MD5 / $hex_sigs HEX)" 1
+
+else
+	eout "{sigup} latest signature set already installed" 1
+fi
+
+rm -f $tmpf
+}
+
+if [ -z "$1" ]; then
+        header
+        usage_short
+else
+ while [ -n "$1" ]; do
+ case "$1" in
+	--mkpubpaths)
+		if [ "$public_scan" == "1" ]; then
+		chmod 711 $inspath/pub
+		for user in `cat /etc/passwd | cut -d ':' -f1`; do
+			uid=`id --user $user`
+			if [ -z "$uid" ]; then 
+				uid=9
+			fi
+			if [ -z "$pubuser_minuid" ]; then
+				pubuser_minuid=10
+			fi
+			if [ "$uid" -ge "$pubuser_minuid" ] && [ ! -d "$inspath/pub/$user" ]; then
+				mkdir -p $inspath/pub/$user/quar $inspath/pub/$user/sess $inspath/pub/$user/tmp >> /dev/null 2>&1
+				touch $inspath/pub/$user/event_log >> /dev/null 2>&1
+				chown -R $user.$user $inspath/pub/$user >> /dev/null 2>&1
+				chmod 750 $inspath/pub/$user $inspath/pub/$user/quar $inspath/pub/$user/sess $inspath/pub/$user/tmp >> /dev/null 2>&1
+				chmod 640 $inspath/pub/$user/event_log >> /dev/null 2>&1
+				eout "{glob} created public scanning paths for user $user"
+			fi
+			unset uid user
+		done
+		exit
+		else
+			header
+			echo "public scanning support not enabled in conf.maldet, aborting."
+			exit
+		fi
+	;;
+	--modsec)
+		setmodsec=1
+	;;
+	-U|--user)
+		shift
+		user="$1"
+        	quardir=$inspath/pub/$user/quar
+	        sessdir=$inspath/pub/$user/sess
+	        tmpdir=$inspath/pub/$user/tmp
+	        logf=$inspath/pub/$user/event_log
+	;;
+	-co|--config-option)
+		shift
+		user=`whoami`
+		if [ ! "$user" == "root" ]; then
+		        tmpdir=$inspath/pub/$user/tmp
+		fi
+		tmpco=$tmpdir/config.cli
+		rm -f $tmpco
+		touch $tmpco
+		echo $1 | sed -e 's/--config-option //' -e 's/-co //' | tr -d ' ' | tr ',' '\n' > $tmpco
+		. $tmpco
+		rm -f $tmpco
+	;;
+	-qd)
+		shift
+		if [ -d "$1" ];  then
+			eout "{scan} set quarantine path: $1" 1
+			quardir="$1"
+		fi
+	;;
+	-b|--background)
+		set_background=1
+	;;
+	-c|--checkout)
+		shift
+		header
+		checkout "$1"
+	;;
+	--alert-daily)
+		alert daily
+	;;
+	--alert-weekly)
+		alert weekly
+	;;
+	-m|--monitor)
+		header
+		shift
+                if [ "$OSTYPE" == "FreeBSD" ]; then
+                        eout "{mon} not currently supported under FreeBSD" 1
+                else
+			svc=m
+			trap trap_exit 2
+			monitor_init "$1"
+		fi
+	;;
+	-k|--kill-monitor)
+		header
+		if [ "$OSTYPE" == "FreeBSD" ]; then
+			eout "{mon} not currently supported under FreeBSD" 1
+		else
+			eout "{mon} sent kill to monitor service" 1
+			monitor_kill
+		fi
+	;;
+	-a|--scan-all)
+		shift
+		if [ -z "$setmodsec" ]; then
+			header
+			check_clibkeyutils
+		fi
+		svc=a
+		trap trap_exit 2
+		spath="$1"
+		if [ "$spath" == "" ]; then
+			spath=/home
+		fi
+		if [ "$set_background" == "1" ]; then
+			eout "{scan} launching scan of $spath to background, see $inspath/event_log for progress" 1
+                        scan "$spath" all >> /dev/null 2>&1 &
+		else
+		        scan "$spath" all
+		fi
+	;;
+	-r|--scan-recent)
+		header
+		svc=r
+		trap trap_exit 2
+		shift
+		spath="$1"
+		shift
+		days="$1"
+		if [ -z "$spath" ]; then
+			eout "{scan} no path defined" 1
+			exit
+		fi
+		if [ -z "$days" ]; then
+			days=7
+		fi
+                if [ "$set_background" == "1" ]; then
+                        eout "{scan} launching scan of $spath changes in last ${days}d to background, see $inspath/event_log for progress" 1
+			scan "$spath" "$days" >> /dev/null 2>&1 &
+		else
+			scan "$spath" "$days"
+		fi
+	;;
+	-l|--log)
+		header
+		view
+	;;
+	-e|--report)
+		header
+		shift
+		view_report "$1" "$2"
+	;;
+	-p|--purge)
+		header
+		purge
+	;;
+	-d|--update-ver|--update-version)
+		header
+		lmdup
+	;;
+	-u|--update)
+		shift
+		if [ ! "$1" == "1" ]; then
+			header
+		fi
+		sigup
+	;;
+	-s|--restore)
+		header
+		shift
+		if [ -f "$sessdir/session.hits.$1" ]; then
+			restore_hitlist "$1"
+		else
+			restore "$1"
+		fi
+	;;
+	-q|--quarantine)
+		header
+		shift
+		quar_hitlist "$1"
+	;;
+	-n|--clean)
+		header
+		shift
+		clean_hitlist "$1"
+	;;
+	-h|--help)
+		header
+		usage_long
+	;;
+	*)
+		header
+		usage_short
+	esac
+	shift
+	done
+fi

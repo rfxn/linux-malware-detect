@@ -1,0 +1,1 @@
+sed -i -e s/<?.*eval(gzinflate(base64_decode(.*?>// -e s/<?php.*eval(gzinflate(base64_decode(.*?>// -e s/eval(gzinflate(base64_decode(.*);//

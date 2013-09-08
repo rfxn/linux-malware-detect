@@ -1,0 +1,476 @@
+Linux Malware Detect v1.4.1
+            (C) 2002-2013, R-fx Networks <proj@r-fx.org>
+            (C) 2013, Ryan MacDonald <ryan@r-fx.org>
+inotifywait (C) 2007, Rohan McGovern <rohan@mcgovern.id.au>
+This program may be freely redistributed under the terms of the GNU GPL v2
+
+::::::::::::::::::::::::::::::::::
+
+:: CONTENTS ::
+.: 1 [ DESCRIPTION ]
+.: 2 [ FEATURES ]
+.: 3 [ THREAT SOURCE DATA ]
+.: 4 [ RELEASE UPDATES ]
+.: 4.1 [ SIGNATURE UPDATES ]
+.: 5 [ DETECTED THREATS ]
+.: 6 [ THREAT SHARING ]
+.: 7 [ CONFIGURATION ]
+.: 8 [ IGNORE OPTIONS ]
+.: 9 [ CLI USAGE ]
+.: 10 [ CRON DAILY ]
+.: 11 [ INOTIFY MONITORING ]
+.: 12 [ MODSECURITY2 UPLOAD SCANNING ]
+.: 13 [ CLEANER RULES ]
+
+::::::::::::::::::::::::::::::::::
+
+.: 1 [ DESCRIPTION ]
+
+Linux Malware Detect (LMD) is a malware scanner for Linux released under the 
+GNU GPLv2 license, that is designed around the threats faced in shared hosted 
+environments. It uses threat data from network edge intrusion detection 
+systems to extract malware that is actively being used in attacks and 
+generates signatures for detection. In addition, threat data is also derived 
+from user submissions with the LMD checkout feature and from malware 
+community resources. The signatures that LMD uses are MD5 file hashes and HEX 
+pattern matches, they are also easily exported to any number of detection 
+tools such as ClamAV.
+
+The driving force behind LMD is that there is currently limited availability 
+of open source/restriction free tools for Linux systems that focus on malware 
+detection and more important that get it right. Many of the AV products that 
+perform malware detection on Linux have a very poor track record of detecting 
+threats, especially those targeted at shared hosted environments.
+
+The threat landscape in shared hosted environments is unique from that of the 
+standard AV products detection suite in that they are detecting primarily OS 
+level trojans, rootkits and traditional file-infecting viruses but missing 
+the ever increasing variety of malware on the user account level which serves 
+as an attack platform.
+
+Using the CYMRU malware hash registry, which provides malware detection data 
+for 30 major AV packages, we can demonstrate this short coming in current 
+threat detection. The following is an analysis of the core MD5 hashes (5,393) 
+in LMD 1.4.1 and the percentage of major AV products that currently detect 
+the hashes.
+
+KNOWN MALWARE:      1029
+% AV DETECT (AVG):  48
+% AV DETECT (LOW):  58
+% AV DETECT (HIGH): 80
+UNKNOWN MALWARE:    4364
+
+What this information means, is that of the of the 5,393 hashes, 81% or 4,364 
+malware items are NOT detected / known by the top 30 major AV packages. The 1,029 
+malware items that are known / detected have an average of a 48% detection 
+rate among major AV packages with a low / high margin of detection at 58 and 
+80 percent respective. This clearly demonstrates the lacking capacity in currently
+available tools and why it is important that something fill the void, especially
+in the Linux shared hosted environment.
+
+.: 2 [ FEATURES ]
+
+- MD5 file hash detection for quick threat identification
+- HEX based pattern matching for identifying threat variants
+- statistical analysis component for detection of obfuscated threats (e.g: base64)
+- integrated detection of ClamAV to use as scanner engine for improved performance
+- integrated signature update feature with -u|--update
+- integrated version update feature with -d|--update-ver
+- scan-recent option to scan only files that have been added/changed in X days
+- scan-all option for full path based scanning
+- checkout option to upload suspected malware to rfxn.com for review / hashing
+- full reporting system to view current and previous scan results
+- quarantine queue that stores threats in a safe fashion with no permissions
+- quarantine batching option to quarantine the results of a current or past scans
+- quarantine restore option to restore files to original path, owner and perms
+- quarantine suspend account option to Cpanel suspend or shell revoke users
+- cleaner rules to attempt removal of malware injected strings
+- cleaner batching option to attempt cleaning of previous scan reports
+- cleaner rules to remove base64 and gzinflate(base64 injected malware
+- daily cron based scanning of all changes in last 24h in user homedirs
+- daily cron script compatible with stock RH style systems, Cpanel & Ensim
+- kernel based inotify real time file scanning of created/modified/moved files
+- kernel inotify monitor that can take path data from STDIN or FILE
+- kernel inotify monitor convenience feature to monitor system users
+- kernel inotify monitor can be restricted to a configurable user html root
+- kernel inotify monitor with dynamic sysctl limits for optimal performance
+- kernel inotify alerting through daily and/or optional weekly reports
+- HTTP upload scanning through mod_security2 inspectFile hook
+- e-mail alert reporting after every scan execution (manual & daily)
+- path, extension and signature based ignore options
+- background scanner option for unattended scan operations
+- verbose logging & output of all actions
+
+
+.: 3 [ THREAT SOURCE DATA ]
+
+The defining difference with LMD is that it doesn't just detect malware based 
+on signatures/hashes that someone else generated but rather it is an 
+encompassing project that actively tracks in the wild threats and generates 
+signatures based on those real world threats that are currently circulating.
+
+There are four main sources for malware data that is used to generate LMD 
+signatures:
+- Network Edge IPS: The network I manage hosts over 35,000 web sites and as 
+such receives a large amount of daily abuse, all of which is logged by our 
+network edge IPS. The IPS events are processed to extract malware url's, 
+decode POST payload and base64/gzip encoded abuse data and ultimately that 
+malware is retrieved, reviewed, classified and then signatures generated as 
+appropriate. The vast majority of LMD signatures have been derived from IPS 
+extracted data.
+- Community Data: Data is aggregated from multiple community malware websites 
+such as clean-mx and malwaredomainlist then processed to retrieve new 
+malware, review, classify and then generate signatures.
+- ClamAV: The HEX & MD5 detection signatures from ClamAV are monitored for 
+relevant updates that apply to the target user group of LMD and added to the 
+project as appropriate. To date there has been roughly 400 signatures ported 
+from ClamAV while the LMD project has contributed back to ClamAV by 
+submitting over 1,100 signatures and continues to do so on an ongoing basis.
+- User Submission: LMD has a checkout feature that allows users to submit 
+suspected malware for review, this has grown into a very popular feature and 
+generates on average about 30-50 submissions per week.
+
+.: 4 [ RELEASE UPDATES ]
+Updates to the release version of LMD are not automatically installed but can
+be installed using the --update-ver option. There is good reasons that this is
+not done automatically and I really dont feel like listing them so just think
+about it a bit.
+
+The latest changes in the release version can always be viewed at:
+http://www.rfxn.com/appdocs/CHANGELOG.maldetect
+
+.: 4.1 [ SIGNATURE UPDATES ]
+
+The LMD signatures are updated typically once per day or more frequently
+depending on incoming threat data from the LMD checkout feature, IPS malware
+extraction and other sources. The updating of signatures in LMD installations
+is performed daily through the default cron.daily script with the --update
+option, which can be run manually at any time.
+
+An RSS & XML data source is available for tracking malware threat updates:
+RSS Recent Signatures: http://www.rfxn.com/api/lmd
+XML Recent Signatures: http://www.rfxn.com/api/lmd?id=recent
+XML All Signatures:    http://www.rfxn.com/api/lmd?id=all
+
+.: 5 [ DETECTED THREATS ]
+
+LMD 1.4.1 has a total of 7,241 (5393 MD5 / 1848 HEX) signatures (before updates),
+below is a listing of the top 60 threats by prevalence detected by LMD.
+
+base64.inject.unclassed    bin.dccserv.irsexxy      bin.fakeproc.Xnuxer
+bin.ircbot.nbot            bin.ircbot.php3          bin.ircbot.unclassed
+bin.pktflood.ABC123        bin.pktflood.osf         bin.trojan.linuxsmalli
+c.ircbot.tsunami           exp.linux.rstb           exp.linux.unclassed
+exp.setuid0.unclassed      gzbase64.inject          html.phishing.auc61
+html.phishing.hsbc         perl.connback.DataCha0s  perl.connback.N2
+perl.cpanel.cpwrap         perl.mailer.yellsoft     perl.ircbot.atrixteam
+perl.ircbot.bRuNo          perl.ircbot.Clx          perl.ircbot.devil
+perl.ircbot.fx29           perl.ircbot.magnum       perl.ircbot.oldwolf
+perl.ircbot.putr4XtReme    perl.ircbot.rafflesia    perl.ircbot.UberCracker
+perl.ircbot.xdh            perl.ircbot.xscan        perl.shell.cbLorD
+perl.shell.cgitelnet       php.cmdshell.c100        php.cmdshell.c99
+php.cmdshell.cih           php.cmdshell.egyspider   php.cmdshell.fx29
+php.cmdshell.ItsmYarD      php.cmdshell.Ketemu      php.cmdshell.N3tshell
+php.cmdshell.r57           php.cmdshell.unclassed   php.defash.buno
+php.exe.globals            php.include.remote       php.ircbot.InsideTeam
+php.ircbot.lolwut          php.ircbot.sniper        php.ircbot.vj_denie
+php.mailer.10hack          php.mailer.bombam        php.mailer.PostMan
+php.phishing.AliKay        php.phishing.mrbrain     php.phishing.ReZulT
+php.pktflood.oey           php.shell.rc99           php.shell.shellcomm
+
+.: 6 [ THREAT SHARING ]
+
+I am a firm believer in not reinventing the wheel, for my own sanity or that
+of others. As such all unique theat data is submitted to CYMRU & ClamAV so
+that the open source and anti-malware community at large can grow from this
+project.
+
+.: 7 [ CONFIGURATION ]
+
+The configuration of LMD is handled through /usr/local/maldetect/conf.maldet
+and all options are well commented for ease of configuration.
+
+By default LMD has the auto-qurantine of files disabled, this will mean that
+YOU WILL NEED TO ACT on any threats detected or pass the SCANID to the '-q'
+option to batch quarantine the results. To change this please set quar_hits=1
+in conf.maldet.
+
+.: 8 [ IGNORE OPTIONS ]
+
+There are four ignore files available and they break down as follows:
+
+/usr/local/maldetect/ignore_paths
+A line spaced file for paths that are to be execluded from search results
+ Sample ignore entry:
+ /home/user/public_html/cgi-bin
+
+/usr/local/maldetect/ignore_file_ext
+A line spaced file for file extensions to be excluded from search results
+ Sample ignore entry:
+ .js
+ .css
+
+/usr/local/maldetect/ignore_sigs
+A line spaced file for signatures that should be removed from file scanning
+ Sample ignore entry:
+ base64.inject.unclassed
+
+/usr/local/maldetect/ignore_inotify
+A line spaced file for regexp paths that are excluded from inotify monitoring
+ Sample ignore entry:
+ ^/home/user$
+ ^/var/tmp/#sql_.*\.MYD$
+
+.: 9 [ CLI USAGE ]
+
+Once LMD is installed it can be run through the 'maldet' command, the '--help'
+option gives a detailed summary of usage options:
+
+    -b, --background
+      Execute operations in the background, ideal for large scans
+      e.g: maldet -b -r /home/?/public_html 7
+
+    -u, --update
+       Update malware detection signatures from rfxn.com
+
+    -d, --update-ver
+       Update the installed version from rfxn.com
+
+    -m, --monitor USERS|PATHS|FILE
+       Run maldet with inotify kernel level file create/modify monitoring
+       If USERS is specified, monitor user homedirs for UID's > 500
+       If FILE is specified, paths will be extracted from file, line spaced
+       If PATHS are specified, must be comma spaced list, NO WILDCARDS!
+       e.g: maldet --monitor users
+       e.g: maldet --monitor /root/monitor_paths
+       e.g: maldet --monitor /home/mike,/home/ashton
+
+    -k, --kill
+       Terminate inotify monitoring service
+
+    -r, --scan-recent PATH DAYS
+       Scan files created/modified in the last X days (default: 7d, wildcard: ?)
+       e.g: maldet -r /home/?/public_html 2
+
+    -a, --scan-all PATH
+       Scan all files in path (default: /home, wildcard: ?)
+       e.g: maldet -a /home/?/public_html
+
+    -c, --checkout FILE
+       Upload suspected malware to rfxn.com for review & hashing into signatures
+
+    -l, --log
+       View maldet log file events
+
+    -e, --report SCANID email
+       View scan report of most recent scan or of a specific SCANID and optionally
+       e-mail the report to a supplied e-mail address
+       e.g: maldet --report
+       e.g: maldet --report list
+       e.g: maldet --report 050910-1534.21135
+       e.g: maldet --report SCANID user@domain.com
+
+    -s, --restore FILE|SCANID
+       Restore file from quarantine queue to orginal path or restore all items from
+       a specific SCANID
+       e.g: maldet --restore /usr/local/maldetect/quarantine/config.php.23754
+       e.g: maldet --restore 050910-1534.21135
+
+    -q, --quarantine SCANID
+       Quarantine all malware from report SCANID
+       e.g: maldet --quarantine 050910-1534.21135
+
+    -n, --clean SCANID
+       Try to clean & restore malware hits from report SCANID
+       e.g: maldet --clean 050910-1534.21135
+
+    -U, --user USER
+       Set execution under specified user, ideal for restoring from user quarantine or
+       to view user reports.
+       e.g: maldet --user nobody --report
+       e.g: maldet --user nobody --restore 050910-1534.21135
+
+    -co, --config-option VAR1=VALUE,VAR2=VALUE,VAR3=VALUE
+       Set or redefine the value of conf.maldet config options
+       e.g: maldet --config-option email_addr=you@domain.com,quar_hits=1
+
+    -p, --purge
+       Clear logs, quarantine queue, session and temporary data.
+
+.: 10 [ CRON DAILY ]
+
+The cronjob installed by LMD is located at /etc/cron.daily/maldet and is used
+to perform a daily update of signatures, keep the session, temp and quarantine
+data to no more than 14d old and run a daily scan of recent file system changes.
+
+The daily scan supports Ensim virtual roots or standard Linux /home*/user paths,
+such as Cpanel. The default is to just scan the web roots daily, which breaks
+down as /home*/*/public_html or on Ensim /home/virtual/*/fst/var/www/html and
+/home/virtual/*/fst/home/*/public_html.
+
+If you are running monitor mode, the daily scans will be skipped and instead a
+daily report will be issued for all monitoring events. If you need to scan
+additional paths, you should review the cronjob and edit it accordingly.
+
+.: 11 [ INOTIFY MONITORING ]
+
+The inotify monitoring feature is designed to monitor users in real-time for
+file creation/modify/move operations. This option requires a kernel that
+supports inotify_watch (CONFIG_INOTIFY) which is found in kernels 2.6.13+
+and CentOS/RHEL 5 by default. If you are running CentOS 4 you should consider
+an inbox upgrade with: http://www.rfxn.com/upgrade-centos-4-8-to-5-3/
+
+There are three modes that the monitor can be executed with and they relate
+to what will be monitored, they are USERS|PATHS|FILES. 
+       e.g: maldet --monitor users
+       e.g: maldet --monitor /root/monitor_paths
+       e.g: maldet --monitor /home/mike,/home/ashton
+
+The options break down as follows:
+USERS -  The users option will take the homedirs of all system users that are
+         above inotify_minuid and monitor them. If inotify_webdir is set then
+         the users webdir, if it exists, will only be monitored.
+PATHS -  A comma spaced list of paths to monitor
+FILE  -  A line spaced file list of paths to monitor
+
+Once you start maldet in monitor mode, it will preprocess the paths based on
+the option specified followed by starting the inotify process. The starting of
+the inotify process can be a time consuming task as it needs to setup a monitor
+hook for every file under the monitored paths. Although the startup process can
+impact the load temporarily, once the process has started it maintains all of
+its resources inside kernel memory and has a very small userspace footprint in
+memory or cpu usage.
+
+The scanner component of the monitor watches for notifications from the inotify
+process and batches items to be scanned, by default, every 30 seconds. If you
+need tighter control of the scanning timer, you can edit inotify_stime in
+conf.maldet.
+
+The alerting of file hits under monitor mode is handled through a daily report
+instead of sending an email on every hit. The cron.daily job installed by LMD
+will call an --alert-daily flag and send an alert for the last days hits. There
+is also an --alert-weekly option that can be used, simply edit the cron at
+/etc/cron.daily/maldet and change the --alert-daily to --alert-weekly.
+
+Terminating the inotify monitoring is done by passing the '-k|--kill-monitor'
+option to maldet, it will touch a file handle monitored by maldet and on the
+next waking cycle of the monitor service, it will terminate itself and all
+inotify processes.
+
+.: 12 [ MODSECURITY2 UPLOAD SCANNING ]
+
+The support for HTTP upload scanning is provided through mod_security2's inspectFile hook.
+This feature allows for a validation script to be used in permitting or denying an upload. 
+
+The convenience script to faciliate this is called modsec.sh and is located in the
+/usr/local/maldetect installation path. The default setup is to run a standard maldet scan
+with no clamav support, no cleaner rule executions and quarantining enabled; these options
+are set in the interest of performance vs accuracy which is a fair tradeoff. 
+
+The scan options can be modified in the modsec.sh file if so desired, the default
+scan options are as follows:
+--config-option quar_hits=1,quar_clean=0,clamav_scan=0 --modsec -a "$file"
+
+There is a tangible performance difference in disabling clamav scanning in this usage
+scenario. The native LMD scanner engine is much faster than the clamav scanner engine
+in single file scans by a wide margin. A single file scan using clamav takes roughly
+3sec on average while the LMD scanner engine takes 0.5sec or less.
+
+To enable upload scanning with mod_security2 you must set enable the public_scan option
+in conf.maldet (public_scan=1) then add the following rules to your mod_security2 
+configuration. These rules are best placed in your modsec2.user.conf file on cpanel servers
+or at the top of the appropraite rules file for your setup.
+
+/usr/local/apache/conf/modsec2.user.conf (or similar mod_security2 rules file):
+SecRequestBodyAccess On
+SecRule FILES_TMPNAMES "@inspectFile /usr/local/maldetect/modsec.sh" \
+                "log,auditlog,deny,severity:2,phase:2,t:none"
+
+A restart of the HTTPd service is required following these changes.
+
+When an upload takes place that is determined to be malware, it will be rejected and an
+entry will appear in the mod_security2 SecAuditLog file. On cpanel servers and most
+configurations this is the modsec_audit.log located under /usr/local/apache/logs or 
+/var/log/httpd.
+
+The log entry will appear similar to the following:
+Message: Access denied with code 406 (phase 2). File "/tmp/20111120-....-file" rejected by
+the approver script "/usr/local/maldetect/modsec.sh": 0 maldet: {HEX}php.cmdshell.r57.317
+/tmp/20111120-....-file [file "/usr/local/apache/conf/modsec2.user.conf"] [line "3"]
+[severity "CRITICAL"]
+
+The default alerting options will apply and an e-mail will be sent when hits are found. This
+can be changed in the modsec.sh script by editing the --config-option values.
+
+To disable alerts append email_alert=0 to the --config-option values:
+--config-option quar_hits=1,quar_clean=0,clamav_scan=0,email_alert=0
+
+To change the e-mail address for alerts on upload hits, append email_addr=you@domain.com
+to the --config-option values:
+--config-option quar_hits=1,quar_clean=0,clamav_scan=0,email_addr=you@domain.com
+
+The nature of uploads is such that they are performed either under the user that the HTTP
+service is running as or under that of a system user in an suexec style setup (i.e: phpsuexec).
+This required a change to the way LMD stores session, temporary and quarantine data to allow
+for non-root users to perform scans.
+
+Given that the maldetect installation path is owned by user root, we either need to set a pub
+path world writable (777) or populate the pub path with user owned paths. It was undesirable
+to set any path world writable and as such a feature to populate path data was created. This
+feature is controlled with the --mkpubpaths flag and is executed from cron every 10 minutes,
+it will only execute if the public_scan variable is enabled in conf.maldet. As such, it is
+important to make sure the public_scan variable is set to enabled (1) in conf.maldet and it is
+advised to run 'maldet --mkpubpaths' manually to prepopulate the user paths. There after, the
+cron will ensure new users have paths created no later than 10 minutes after creation.
+
+All non-root scans, such as those performed under mod_security2, will be stored under the
+/usr/local/maldetect/pub/username directory tree. The quarantine paths are relative to the user
+that exectues the scan, so user nobody would be under pub/nobody/quar/. The actual paths
+for where files are quarantined and the user which executed the scan, can be verified in the
+e-mail reports for upload hits.
+
+To restore files quarantined under non-root users, you must pass the -U|--user option to LMD,
+for example if user nobody quarantined a file you would like to restore, it can be restored as
+follows:
+maldet --user nobody /usr/local/maldetect/pub/nobody/quar/20111120-file-SFwTeu.22408
+
+Or, as always the scan ID can be used to restore
+maldet --user nobody 112011-0032.13771
+
+.: 13 [ CLEANER RULES ]
+
+The cleaner function looks for signature-named rules under the clean/ path,
+these rules can consist of any command that is designed to clean a file of
+malware. A cleaner rule must result in a file being able to pass a scan
+without tripping a HIT otherwise it will classify the clean action as FAILED.
+
+Let us assume for a moment we have malware that we want to clean and it trips
+with the signature "{HEX}php.cmdshell.r57.89". The actual signature string in
+this is "php.cmdshell.r57", the "{HEX}" just defines the format and ".89" is
+the variant number. So, to create a clean rule for php.cmdshell.r57 we would
+add a file 'clean/php.cmdshell.r57' and this would be executed against any
+file that hits on the signature of the same name.
+
+The actual contents of the rule should be a single line command that will be
+executed against the hit file, for example the execution looks something like:
+
+YOUR_COMMAND MALWARE_FILE
+
+So, for a string based malware injection you could easily throw in a 'sed -i'
+into the rule file with the appropriate pattern to strip the string(s) from
+the file. Once the clean command has run, a rescan will be performed on the
+file and if it causes causes a hit, the clean will be marked as FAILED. A
+successful clean ALWAYS results in the file being restored if possible to
+its original path, owner and mode.
+
+An important note is that the cleaner function is a subfunction of the
+quarantine, so if the quarantine is disabled then by default, malware hits
+will not have clean attempts made. There are two ways around this, apart from
+the obvious of turning on quarantine and rescanning (which is a waste of time).
+The best way is to enable the quarantine and then use the -q|--quarantine flag
+to batch through the scan results, which will quarantine and clean files. The
+second is to use the -n|--clean flag which will try to clean files in place,
+be that in the quarantine or the files original path, wherever it can be found.
+
+e.g: maldet -q SCANID
+e.g: maldet --clean SCANID
