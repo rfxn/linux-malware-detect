@@ -1,0 +1,11 @@
+[Unit]
+Description=Linux Malware Detect monitoring - maldet
+After=network.target
+
+[Service]
+ExecStart=/usr/local/maldetect/maldet --monitor /usr/local/maldetect/monitor_paths
+ExecStop=/usr/local/maldetect/maldet --kill-monitor
+Type=forking
+PIDFile=/usr/local/maldetect/tmp/inotifywait.pid
+[Install]
+WantedBy=multi-user.target
