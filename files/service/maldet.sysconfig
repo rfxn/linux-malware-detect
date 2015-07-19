@@ -1,0 +1,12 @@
+##
+# Linux Malware Detect v1.5
+#             (C) 2002-2015, R-fx Networks <proj@rfxn.com>
+#             (C) 2015, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# MONITOR_MODE
+# users      | monitor all local unix users
+# PATH FILE  | read path file, line spaced, for local paths to monitor
+
+#MONITOR_MODE="users"
+#MONITOR_MODE="/usr/local/maldetect/monitor_paths"
