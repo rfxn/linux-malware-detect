@@ -3,3 +3,4 @@
 ^/var/cache/buagent/md0.cache.data$
 ^/var/tmp/#sql_.*\.MYD$
 ^/tmp/#sql_.*\.MYD$
+^/var/tmp/clamav-.*
