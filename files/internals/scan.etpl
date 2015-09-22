@@ -1,4 +1,3 @@
-#!/bin/bash
 if [ -z "$type" ]; then
 	type=scan
 fi
