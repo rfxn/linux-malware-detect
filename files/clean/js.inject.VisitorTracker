@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # $1 file path, $2 signature name, $3 file owner, $4 file mode, $5 file size (b), $6 file md5sum
 if [ -f "$1" ]; then
 	sed -i -e '/var visitortrackerin = setInterval(function(){/,/}\/\*visitorTracker\*\//d' -e '/\/\*visitorTracker\*\//d' "$1"

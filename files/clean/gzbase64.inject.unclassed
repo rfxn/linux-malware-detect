@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # $1 file path, $2 signature name, $3 file owner, $4 file mode, $5 file size (b), $6 file md5sum
 if [ -f "$1" ]; then
 	sed -i -e 's/<?.*eval(gzinflate(base64_decode(.*?>//' -e 's/<?php.*eval(gzinflate(base64_decode(.*?>//' -e 's/eval(gzinflate(base64_decode(.*);//' "$1"
