@@ -177,12 +177,12 @@ scan_export_filelist="$scan_export_filelist"
 ##
 # The default quarantine action for malware hits
 # [0 = alert only, 1 = move to quarantine & alert]
-quarantine_hits="$quarantine_hits"
+quarantine_hits="1"
 
 # Try to clean string based malware injections
 # [NOTE: quarantine_hits=1 required]
 # [0 = disabled, 1 = clean]
-quarantine_clean="$quarantine_clean"
+quarantine_clean="1"
 
 # The default suspend action for users wih hits
 # Cpanel suspend or set shell /bin/false on non-Cpanel
