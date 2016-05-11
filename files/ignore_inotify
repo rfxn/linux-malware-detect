@@ -4,3 +4,4 @@
 ^/var/tmp/#sql_.*\.MYD$
 ^/tmp/#sql_.*\.MYD$
 ^/var/tmp/clamav-.*
+^/tmp/clamav-.*
