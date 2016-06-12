@@ -16,6 +16,15 @@
 # Short-Description: Start/stop maldet in monitor mode
 ### END INIT INFO
 
+inspath=/usr/local/maldetect
+intcnf="$inspath/internals/internals.conf"
+
+if [ -f "$intcnf" ]; then
+	source $intcnf
+else
+	echo "$intcnf not found."
+	exit 1
+fi
 
 # Source function library.
 if [ -f /etc/init.d/functions ]; then
@@ -27,8 +36,8 @@ if [ -f "/etc/sysconfig/maldet" ]; then
 	. /etc/sysconfig/maldet
 elif [ -f "/etc/default/maldet" ]; then
     . /etc/default/maldet
-elif [ "$(egrep ^default_monitor_mode /usr/local/maldetect/conf.maldet 2> /dev/null)" ]; then
-	. /usr/local/maldetect/conf.maldet
+elif [ "$(egrep ^default_monitor_mode $cnf 2> /dev/null)" ]; then
+	. $cnf
 	if [ "$default_monitor_mode" ]; then
 		MONITOR_MODE="$default_monitor_mode"
 	fi
@@ -43,18 +52,18 @@ fi
 
 if [ -z "$MONITOR_MODE" ]; then
     if [ -f /etc/redhat-release ]; then
-        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/sysconfig/maldet, or \$default_monitor_mode in /usr/local/maldetect/conf.maldet"
+        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/sysconfig/maldet, or \$default_monitor_mode in $cnf"
     elif [ -f /etc/debian_version ]; then
-        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/default/maldet, or \$default_monitor_mode in /usr/local/maldetect/conf.maldet"
+        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/default/maldet, or \$default_monitor_mode in $cnf"
     else
-        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/sysconfig/maldet, or \$default_monitor_mode in /usr/local/maldetect/conf.maldet"
+        echo "error no default monitor mode defined, set \$MONITOR_MODE in /etc/sysconfig/maldet, or \$default_monitor_mode in $cnf"
     fi
 	exit 1
 fi
 
 start() {
         echo -n "Starting $prog: "
-        /usr/local/maldetect/maldet --monitor $MONITOR_MODE
+        $inspath/maldet --monitor $MONITOR_MODE
         RETVAL=$? [ $RETVAL -eq 0 ] && touch $LOCKFILE
         echo
         return $RETVAL
@@ -63,11 +72,11 @@ start() {
 stop() {
         echo -n "Shutting down $prog: "
         if [ -f /etc/redhat-release ]; then
-            /usr/local/maldetect/maldet --kill-monitor && success || failure
+            $inspath/maldet --kill-monitor && success || failure
         elif [ -f /etc/debian_version ]; then
-            /usr/local/maldetect/maldet --kill-monitor && log_success_msg || log_failure_msg
+            $inspath/maldet --kill-monitor && log_success_msg || log_failure_msg
         else
-            /usr/local/maldetect/maldet --kill-monitor && success || failure
+            $inspath/maldet --kill-monitor && success || failure
         fi
         RETVAL=$? [ $RETVAL -eq 0 ] && rm -f $LOCKFILE
         echo
