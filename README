@@ -309,14 +309,17 @@ The cronjob installed by LMD is located at /etc/cron.daily/maldet and is used
 to perform a daily update of signatures, keep the session, temp and quarantine
 data to no more than 14d old and run a daily scan of recent file system changes.
 
-The daily scan supports Ensim virtual roots or standard Linux /home*/user paths,
-such as Cpanel. The default is to just scan the web roots daily, which breaks
-down as /home*/*/public_html or on Ensim /home/virtual/*/fst/var/www/html and
-/home/virtual/*/fst/home/*/public_html.
+The daily scan supports a variety of control panel systems or standard Linux
+/home*/user paths. 
 
 If you are running monitor mode, the daily scans will be skipped and instead a
-daily report will be issued for all monitoring events. If you need to scan
-additional paths, you should review the cronjob and edit it accordingly.
+daily report will be issued for all monitoring events. 
+
+If you need to scan additional paths, you should review the cronjob and use one
+of the customization hook files, such as '/usr/local/maldetect/cron/custom.cron',
+to write in custom scanning execution. For configuration based cron changes, you
+can redefine any conf.maldet variables at '/etc/sysconfig/maldet' or 
+'/usr/local/maldetect/cron/conf.maldet.cron'.
 
 .: 11 [ INOTIFY MONITORING ]
 
