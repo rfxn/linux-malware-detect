@@ -1,5 +1,4 @@
 cat > /usr/local/maldetect/conf.maldet <<EOF
-#!/bin/bash
 #
 ##
 # Linux Malware Detect v1.5
