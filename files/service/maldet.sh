@@ -15,7 +15,7 @@
 # X-Interactive:     true
 # Short-Description: Start/stop maldet in monitor mode
 ### END INIT INFO
-
+inspath='/usr/local/maldetect'
 intcnf="$inspath/internals/internals.conf"
 
 if [ -f "$intcnf" ]; then

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 file="$1"
+inspath='/usr/local/maldetect'
 intcnf="$inspath/internals/internals.conf"
 
 if [ -f "$intcnf" ]; then
