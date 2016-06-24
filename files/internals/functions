@@ -1599,7 +1599,7 @@ checkout() {
 		
 		eout "{checkout} uploading $file to $host" 1
 		
-ftp -v -n -i $host << EOT
+(ftp -v -n -p -i $host || ftp -v -n -i $host) << EOT
 user $user@rfxn.com $passwd
 prompt
 cd $upath
@@ -1626,7 +1626,7 @@ EOT
 			else
 				storename="$storename_prefix.$filename"
 			fi
-ftp -v -n -i $host << EOT
+(ftp -v -n -p -i $host || ftp -v -n -i $host) << EOT
 user $user $passwd
 prompt
 cd $upath
