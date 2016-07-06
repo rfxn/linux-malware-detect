@@ -5,3 +5,6 @@
 ^/tmp/#sql_.*\.MYD$
 ^/var/tmp/clamav-.*
 ^/tmp/clamav-.*
+^/usr/local/maldetect*
+^/dev/pts*
+^/dev/null

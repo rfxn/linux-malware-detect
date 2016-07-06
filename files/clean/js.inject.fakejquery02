@@ -1,0 +1,6 @@
+#!/bin/bash
+# $1 file path, $2 signature name, $3 file owner, $4 file mode, $5 file size (b), $6 file md5sum
+if [ -f "$1" ]; then
+        sed -i -e '/<script>var.*jquery.min.php?.*encodeURIComponent.*jquery.min.php.*document.getElementsByTagName.*window.location.search.match.*;}<\/script>/d' "$1"
+fi
+
