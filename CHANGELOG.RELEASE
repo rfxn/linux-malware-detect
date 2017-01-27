@@ -1,157 +1,115 @@
-v1.5 | Sep 19 2015
-[New] added -f|--file-list CLI option to allow user supplied run-time file list for scanning
-[New] added -i|--include-regex CLI option for run-time path/file inclusion based on posix-egrep regular expressions
-[New] added -x|--exclude-regex CLI option for run-time path/file exclusion based on posix-egrep regular expressions
-[New] added support for custom md5/hex signatures with preservation across signature and version updates, files located at:
-      sigs/custom.md5.dat
-      sigs/custom.hex.dat
-[New] custom signatures perform run-time conversion into clamscan compatible format on systems that use clamscan engine
-[New] new md5 signature format (md5v2) now includes file size that an md5 hash was derived from in format of:
-      hash:filesize:signame
-[New] added support for custom cleaner rules to be executed on clean events, file name format of
-      "clean/custom.signame"; rules are preserved across signature and version updates
-[New] added support for clam(d) engine when running in inotify monitoring mode
-[New] added URL import feature for global configuration overrides using import_config_url variable in conf.maldet
-[New] added URL import feature for user custom signatures using import_sigs_md5_url & import_sigs_hex_url variables in conf.maldet
-[New] added set of defined exit codes for errored exits(1), successful runs with hits(2), successful runs with no hits(0)
-[New] added uninstall.sh script to maldetect installation path
-[New] added md5 hash verification of signature and version update downloads
-[New] added scan_cpunice option to control CPU priorty value of all scan operations such as find, clamscan etc.. (default 19)
-[New] added scan_ionice option to control IO priority value of all scan operations such as find, clamscan etc.. (default 6)
-[New] added autoupdate_signatures/autoupdate_version options to control daily cron based signature/version updates
-[New] added autoupdate_version_hashed option to control validating hash of maldet executable against upstream version
-[New] added support for virtualmin to cron.daily scans
-[New] added support for ispmanager to cron.daily scans
-[New] added support/detection of clamdscan to leverage memory preloaded signatures and multi-threaded scanning
-[New] added scan_find_timeout option which controls the maximum execution time, in seconds, for the find command to generate a file list
-[New] added scan_ignore_root option to exclude root owned files from scans
-[New] added scan_ignore_user and scan_ignore_group options which allow for the exclusion of specified user and group names from scans
-[New] added scan_export_filelist option allowing for daily scan of recent added/modified files to be exported to a static path
-[New] added sourcing of of conf.maldet.cron into the cron.daily task which allows for cron specific configurations
-[New] added inotify_reloadtime which controls the time at which inotify watcher will reload LMD configuration data
-[New] added support for comma space (,) path list on CLI
-[New] added reload option for monitor mode to invoke forced configuration reload (-m|--monitor reload)
-[New] added maldet init script for monitor mode with $default_monitor_mode conf.maldet variable
-[New] added usage of /etc/sysconfig/maldet for configuration of monitor mode init/systemd options, overrides conf.maldet
-[New] added support for 'cpulimit' usage, when installed, through scan_cpulimit and inotify_cpulimit configuration variables
-[Change] increased randomness of quarantine temporary file names
-[Change] added atime,mtime,ctime since epoch values into quarantine info files
-[Change] monitor mode now supports all existing ignore options as well as enforcing minimum/maximum file sizes
-[Change] monitor mode now supports hot configuration reloads by touching reload_monitor under installation path (e.g: touch /usr/local/maldetect/monitor_reload)
-[Change] modsec.sh has been renamed to hookscan.sh and more generic hook based scanning conventions set
-[Change] hookscan.sh will now autodetect if clamdscan is running and perform scans through clamd when appropriate
-[Change] hookscan.sh will now provide more verbose output on malware hit events
-[Change] hookscan.sh now explicitly disables scanning of temporary paths, ensuring only requested file/paths are scanned
-[Change] install.sh now gracefully handles upgrades when monitoring mode is enabled by restarting monitor mode
-[Change] improved handling of single file scans which should now behave as expected
-[Change] explicitly removed the inclusion of tmpdir paths during single file scans
-[Change] automagically remove empty lines from ignore files
-[Change] reordered configuration file, expanded on variable descriptions, overall attempt to simplify/streamline conf.maldet
-[Change] installer symlinks LMD signatures into known/existing ClamAV paths to ensure signatures are loaded into memory by clamd
-[Change] installer issues SIGUSR2 to any running clamd processes to force reload of signature databases
-[Change] cron.daily signature updates issue SIGUSR2 to any running clamd processes to force reload of siganture databases
-[Change] cron.daily signature/version updates sleep random interval 1-999 secs before contacting upstream rfxn.com servers to reduce cdn load
-[Change] modified clamscan database path checks to support cPanel >=11.40 RPM clamAV connector RPM's
-[Change] modified location of statistical data files from tmpdir to sessdir making tmpdir a stateless path that can be purged at anytime
-[Change] when clamscan engine is enabled scan_max_filesize value is now set dynamically based on the largest known file in the md5v2 signature set
-[Change] modified e-mail based alerts to source from an e-mail template file at .email.template
-[Change] clamscan execution command logged to logs/clamscan_log to make debugging clamscan errors easier
-[Change] clamscan stderr/stdout output now pipes to logs/clamscan_log and if clamscan returns an error code (2), flag with an appropriate
-         error message to check the clamscan_log file for more details
-[Change] ambiguous variables renamed for better consistency and more logical naming conventions, documented in CHANGELOG.VARIABLES
-[Change] modified sessionid values to derive from YYMMDD instead of MMDDYY and adjusted human readable report START/END date to include year value
-[Change] modified view_report output to sort output on unix time of scan start times
-[Change] signature updates now download as a single file tgz to reduce bandwidth usage and request load on upstream cdn
-[Change] modified signature update function for additional error checking and better handling of zero sized signature downloads
-[Change] modified version update function for additional error checking and better handling of zero sized file downloads
-[Change] modified '-e|--report list' output include total files scanned, hits and cleaned results, reversed output order and
-         consistent column spacing (column -t)
-[Change] moved tlog executable out of inotify/ path, changed inotify_log path to logs/, removed inotify directory
-[Change] created logs/ path, moved event_log path to logs/
-[Change] modified previous wget timeout values of 3s timeout & 3 retries to 5s timeout & 3 retries
-[Change] wget timeout and retry attempts are now configurable through internals.conf wget_timeout & wget_retries variables
-[Change] removed file type check on native LMD stage2 hex scanner which was part of legacy code and no longer needed
-[Change] removed verbose progressive scan output for native LMD scanner as performance penalty was unreasonable
-[Change] replaced usage of tmpwatch with find in cron.daily for temporary path pruning
-[Change] removed internals.conf from version check hashing for installation version updates (-d|--update-ver)
-[Change] cron.daily now tests for directadmin and scans appropriate user domain paths
-[Change] directory checkout uploads limited to maximum of 50 files
-[Change] added tmpdir_paths option to explicitly scan known temporary (world-write) paths on all scan types
-[Change] updated example ModSecurity rule in README file for compatibility with ModSec 2.7 which now requires
-         every rule, even hooks, to have a rule ID
-[Change] -r|--recent scan now uses mtime and ctime, instead of just mtime, to find recently changed/modified files
-[Change] LMD v1.4.2+ will now use the new md5 v2 signature format and make direct requests on signature
-         updates to the appropriate upstream file (md5v2.dat); old format, md5 v1, preserved in signature
-         releases for compatibility of pre-1.4.2 releases
-[Change] modified hexfifo.pl & hexstring.pl to accept user supplied value for path to hex signature file
-[Change] install.sh now deletes LMD backup installation copies older than 30days
-[Change] references to www.rfxn.com for remote signature and version updates now query cdn.rfxn.com
-[Change] cleaner rules are now executable scripts in which infected files are passed as an argument ($1)
-         allowing for a diverse set of cleaner rule options apart from the previous sed only setup
-[Change] converted current cleaner rules to new executable scripts format
-[Change] checkout uploads now store malware in the filename format of (hostid is an anonymous md5 identifier):
-         $hostid.$RANDOM.$filename.[ascii|bin]
-[Change] inotifywait from inotify-tools is no longer packaged with LMD, it should be downloaded in binary or
-         source form from:
-         https://github.com/rvoicilas/inotify-tools/wiki/
-         binary versions are also available from dag repo at:
-         http://pkgs.repoforge.org/inotify-tools/
-[Change] internals.conf will now attempt to detect the path to inotifywait from $PATH
-[Change] inotify max_user_watches was static set to 128, now configurable with inotify_user_watches
-[Change] inotify values for max_user_instances|watches will first be checked and only modified if the existing
-         values are lower than what maldet requires
-[Change] modified error output for missing inotifywait to display URL to inotify-tools github page
-[Change] modified default scan_hexdepth value to 65k as a result of improved scan efficiency in native scanner engine
-[Change] added backwards compatibility for all pre-v1.5 configuration options however they should be considered deprecated and will be removed in the future
-[Change] expanded on EICAR test signature support for native LMD scanner engine to better facilitate testing of functional installed signature set
-[Change] added scan/find elapsed execution time values to scan report and cli output
-[Change] relocated internal files into $inspath/internals/
-[Change] created generic clean_exit() function to handle file cleanups on all fatal exist and replaced many random rm -f calls with it
-[Change] moved all pre/post actions into a prerun() and postrun() functions
-[Change] moved statistical logging to record_hits() function
-[Change] quarantine() function borrows stat file data from record_hits to reduce calls to stat
-[Change] more extensible cleaner rules with additional input arguments:
-         $1 file path, $2 signame, $3 owner.group, $4 file_chmod, $5 file_size, $6 file_md5
-[Change] added additional fields file_size and file_md5 to quarantine info file
-[Change] added caching support for import_config_url with import_config_expire to control expiry interval
-[Change] stricter handling of variable definitions which contain dynamic variable values
-[Change] modified daily cron recent range from 2 to 1 as mtime/ctime values are n*24h, as such value of 1 is equal to two days
-[Change] modified daily cron to use comma spaced path lists instead of multiple maldet executions
-[Change] changed quarantine malware cleaning default value to 0
-[Change] use of clamav engine output statement now more verbose
-[Change] previously LMD only linked clamav signatures into clamav data paths on install, this is now done after each signature update
-[Change] maldet.sh init script exites code 1 on status check when maldet monitor mode is not found running
-[Change] monitor mode now invokes every 15 seconds, legacy installations will preserve 30 second cycle timing
-[Change] modified shebang to use env bash for portability
-[Fix] when clamdscan was running as a non-root user, would generate lstat errors for all file find results leading
-      to potential false positive hits/quarantines
-[Fix] the permissions of the $tmpdir path can cause clamd when running as a non-root user to fail on startup due
-      as a result of lstat errors on the custom user signature files stored under $tmpdir
-[Fix] clamd.conf configurations containing FollowDirectorySymlinks/FollowFileSymlinks set to false results in the
-      rfxn.* and lmd.user.* links causing clamd startup failures; corrected by updating clamav_linksigs() to copy
-      signatures into clamav data paths instead of linking them
-[Fix] monitor_paths was not being preserved on version updates
-[Fix] record_hit() was not being invoked outside of clamscan based events
-[Fix] monitor.pid file would potentially have an incorrect pid written to it on each execution of monitor_check()
-[Fix] quote syntax error in scan.etpl
-[Fix] help output for -k|--kill-monitor incorrectly referred to --kill instead of --kill-monitor
-[Fix] inotify_user_instances was defined in internals.conf incorrectly as inotify_user_watches
-[Fix] tlog executable was not being set +x during installation
-[Fix] install.sh was attempt to create default event_log while the parent directory did not yet exist
-[Fix] invalid find expression was causing find to return directory paths on recent scans
-[Fix] OSTYPE env checking was not properly matching on all FreeBSD versions
-[Fix] renamed alert() to genalert() to avoid builtin function conflict on Ubuntu
-[Fix] corrected -r|--recent scan mode trap on SIGINT (CTRL+C) not calling trap_exit() for cleanup actions
-[Fix] modified native LMD scanner to better leverage bash internal field separator for handling of paths with spaces
-[Fix] modified all calls to system executables to use paths derived from $PATH
-[Fix] suppressed ignore signature count being displayed when calling with --modsec
-[Fix] set modsec.sh to use /bin/bash as interpreter instead of /bin/sh for compatibility
-[Fix] removed MAILTO & SHELL variables from crons which were causing crond 'bad minute' errors on some systems
-[Fix] quoted extension values from ignore_file_ext input to provide consistent behavior
-[Fix] added trailing slash '/' to all cron.daily scan (find) paths to properly handle symlinked paths
-[Fix] install.sh now links LMD clamav signatures into all clamav data paths it finds instead of just the first
-[Fix] clean() function was improperly exiting after first file hit clean attempt and ignoring all other hits
-[Fix] set interpreter in uninstall.sh to /bin/bash instead of /bin/sh for better compatibility
-[Fix] modified psa scan paths to pull in top level and sub domain content
-[Fix] inotify monitor execution now properly passes ionice configuration value
-[Fix] corrected invalid matching against clamdscan binary when clamd was not available
+TODO drop .beta callouts in internals.conf before release
+
+v1.6 | Feb 00 2017:
+[New] added curated set of YARA webshell & malware signatures for use with ClamAV >= 0.99b
+[New] added cleaner rule 'VistorTracker.Mob'
+[New] added cleaner rule 'js.inject.fakejquery02'
+[New] added support for 'froxlor' to cron.daily execution
+[New] added support for 'vestacp' to cron.daily execution
+[New] added support for 'ispconfig3' to cron.daily execution
+[New] added support for 'DTC' to cron.daily execution
+[New] added '$confpath', '$varlibpath' and '$libpath' for FHS separation
+[New] moved compatibility (legacy) variables out of internals.conf into compat.conf
+[New] added support to pull configuration variables for cron executions from 'sysconfig/maldet'
+[New] added Debian derivatives sysconfig and initd compatibility for function sourcing and subsys locking
+[New] added LSB tags to init script
+[New] added capability of moving public scan path with $userbasedir variable
+[New] manpage added and setup default with install.sh execution
+[Change] YARA-LMD curated signature set will now be included with signature updates
+[Change] differentiate signature hits for YARA with '{YARA}' signame prefix
+[Change] inotify_docroot now accepts comma or white spaced list of paths under user root to monitor
+[Change] removed absolute path usage from 'pidof'
+[Change] drop unneeded usage of shebang from sourced configuration files
+[Change] modified shebang usage with 'env' prefix for portability
+[Change] temporary path usage now consistently using $tmpdir value
+[Change] scan paths must now be absolute paths
+[Change] modified init script stop function for Debian derivatives
+[Change] improved history tracking with proper date stamps, more verbose quarantine history logging and storing
+         into more explicitly named files '$sessdir/hits.hist' and '$sessdir/quarantine.hist'
+[Change] added scan_days value to cron.daily allowing customization of the date range scanned by daily cron
+[Change] replaced remaining absolute calls to sigdirs with '$sigdir'
+[Change] added Debian derivatives support for MONITOR_MODE checks
+[Change] updated cron.daily to provide for a custom execution file and modified custom config file into
+         'cron/conf.maldet.cron' and 'cron/custom.cron'
+[Change] install.sh cased variable on find execution
+[Change] symlink hookscan.sh to modsec.sh for pre-v1.5 compat
+[Change] added '^/tmp/clamav-.*' to ignored paths where ownership matches clamd process
+[Change] preserve custom cron configuration files on upgrade
+[Change] hookscan.sh was calling LMD using legacy, deprecated, '--config-option' options
+[Change] normalize installation path variable between LMD proper and installation scripts
+[Change] reduced redundant path definitions
+[Change] added test for main.cvd and main.cld in determining clamav signature paths
+[Change] README changes to reflect new cron customization setup
+[Change] added attempting passive ftp when active fails for malware checkout uploads
+[Change] .ca.def configuration template renamed importconf and now copied over during installation to
+         'internals/importconf'
+[Change] new versions of 'chown' don't support use of . (dot) to separate user and group
+[Change] swap FreeBSD detection from '$OSTYPE' to 'uname -s'
+[Change] scan.tpl reporting template handles column spacing on filenames with spaces better
+[Change] CLI usage semantics of --include-regex and --exclude-regex now consistently passing to 'find' command
+[Change] moved all internal field separator line break modifications to lbreakifs()
+[Change] quarantine .info file is now field separated with colon symbol (:)
+[Change] quarantine .info file value ordering has been modified
+         # owner:group:mode:size(b):md5:atime(epoch):mtime(epoch):ctime(epoch):file(path)
+[Change] record_hits() now writes file mode and file times (a|m|c) into hits history file
+[Change] 'eval' is now used as a prefix on the 'find' command to better handle the complex set of options passed to 'find'
+         and avoid globbing, splitting and other bash'esque semantic issues
+[Change] modified mkpubpaths cronjob to execute every 5 minutes instead of 10
+[Change] public mode scanning errors are now more verbose
+[Change] updated README to reflect required modsec >=2.9 variable 'SecTmpSaveUploadedFiles'
+         for upload scanning
+[Change] hookscan.sh (modsec.sh) now checks for variable override file at conf.maldet.hookscan
+[Change] added use of sed flag -E for FreeBSD compatibility with GNU sed usage
+[Change] clamscan will now respect scan_max_filesize value instead of hardcoded 5M
+[Change] default scan_max_filesize increased from 768k to 2048k
+[Change] clamscan max-scansize for archive depth set as scan_max_filesize*2
+[Fix] install.sh may not have preserved certain variables on upgrade
+[Fix] clamdscan was running as a non-root user, would generate lstat errors for
+      all file find results leading to potential false positive hit/quarantine
+[Fix] the permissions of the $tmpdir path can cause clamd when running as a
+      non-root user to fail on startup due as a result of lstat errors on the
+      custom user signature files stored under $tmpdir
+[Fix] clamd.conf configurations containing Follow(File|Directory)Symlinks set
+      to false results in the rfxn.*/lmd.user.* links causing clamd startup
+      failures
+[Fix] suppress error output to cli for customer user signature files when they
+      do not exist
+[Fix] uninstall.sh now cleans up signature files from clamav data paths
+[Fix] corrected invalid matching against clamdscan binary when clamd was running
+      as non-root user
+[Fix] intofiywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified
+      to send stdout to logfile for better compatibility
+[Fix] conditionally test for vz container and disable use of ionice which is not support in vz containers
+[Fix] '-k|--kill-monitor' would under certain circumstances leave zombie processes
+[Fix] monitor_cycle() could lead to memory depletion due to infinite loop cycle calls
+[Fix] uninstall.sh was not shutting off monitor mode on uninstall
+[Fix] legacy variable suppress_cleanhit references updated to email_ignore_clean
+[Fix] email alerting broke during an iterative update due to order of precedence change of how configuration
+      files were loaded and compatibility (legacy) variables being set before main conf.maldet was loaded;
+      caused by FHS refactoring
+[Fix] installation upgrade configuration importer was not properly executing after FHS refactoring during an
+      iterative update
+[Fix] issue #167 certain variables not being preserved on importconf execution, updated 'compat.conf'
+[Fix] custom signature runtime files could grow exponentially in monitor mode
+[Fix] make '--mkpubpaths' option cross-platform compatible (debian, rh, bsd)
+[Fix] replaced usage of 'awk' on file name sensitive variables with 'cut' and/or better scoped field separator for awk
+[Fix] double quote wrapped file name variables properly on restore*() functions
+[Fix] quarantine .info files were not properly recording source file atime,mtime,ctime values manual quarantine calls
+[Fix] user supplied paths to CLI are now better handled if they contain special characters
+[Fix] multiple user supplied paths to CLI would generate an error if the first path contained a space and subsequent paths did not
+[Fix] commit c8a1279 introduced bug where clamav could be fed zero sized signature files resulting in fatal exit
+[Fix] public mode scanning will now properly error if mkpubpaths paths do not exist
+[Fix] hookscan.sh (modsec.sh) will now default to not using clamav if clamd is not running
+[Fix] though functional, public mode scanning would result in permission errors on console due to
+      pathing issues with history tracking files
+[Fix] clam(d)scan was not respecting values in 'ignore_sigs' file, this has been corrected for both
+      CLI and monitor mode
+[Fix] addition of prefixing eval to find command required certain values to be escaped differently
+      for proper function of '-r|--recent'
+[Fix] util-linux 2.23 supports 'column' command with '-o' but earlier versions do not, resulting
+      in scan reports generating empty hit lists
+[Fix] importconf was setting invalid vars for custom signature imports; correct variables are
+      import_sigs_md5_url and import_sigs_hex_url
+[Fix] multiplying maldet monitor processes due to 'ps' command expansion under parent bash process on CentOS6
+[Fix] added default installation path to ignore_inotify to prevent monitor looping when
+      '/' is scoped into monitoring mode; results in notify log filling disk space
