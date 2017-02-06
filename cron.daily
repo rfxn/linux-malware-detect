@@ -74,7 +74,7 @@ else
                 $inspath/maldet -b -r /home?/?/domains/?/public_html/,/var/www/html/?/ $scan_days >> /dev/null 2>&1
 	elif [ -d "/var/www/clients" ]; then
 		# ISPConfig
-                $inspath/maldet -b -r /var/www/clients/?/web?/web,/var/www $scan_days >> /dev/null 2>&1
+                $inspath/maldet -b -r /var/www/clients/?/web?/web,/var/www/clients/?/web?/subdomains,/var/www $scan_days >> /dev/null 2>&1
 	elif [ -d "/etc/webmin/virtual-server" ]; then
 		# Virtualmin
                 $inspath/maldet -b -r /home/?/public_html/,/home/?/domains/?/public_html/ $scan_days >> /dev/null 2>&1

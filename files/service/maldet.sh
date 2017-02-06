@@ -34,7 +34,7 @@ fi
 if [ -f "/etc/sysconfig/maldet" ]; then
 	. /etc/sysconfig/maldet
 elif [ -f "/etc/default/maldet" ]; then
-    . /etc/default/maldet
+	. /etc/default/maldet
 elif [ "$(egrep ^default_monitor_mode $cnf 2> /dev/null)" ]; then
 	. $cnf
 	if [ "$default_monitor_mode" ]; then
@@ -89,7 +89,7 @@ restart() {
 
 status() {
         echo -n "Checking $prog monitoring status: "
-        if [ "$(ps -A --user root -o "cmd" | grep maldetect | grep inotifywait)" ]; then
+        if [ "$(pgrep -f inotify.paths.[0-9]+)" ]; then
             echo "Running"
 	    exit 0
         else

@@ -13,6 +13,20 @@ v1.6 | Feb 00 2017:
 [New] added LSB tags to init script
 [New] added capability of moving public scan path with $userbasedir variable
 [New] manpage added and setup default with install.sh execution
+[New] added support for clamd running as an unprivileged user through clamdscan w/ --fdpass options
+[New] added --wget-proxy CLI option for http(s) proxy support
+[New] added clam(d)scan_extraopts variables to internals.conf for appending extra CLI options on clam(d)scan;
+      these values can also be defined in sysconfig or cron/exec based config files and on CLI
+[New] sysconfig support through '/etc/sysconfig/maldet'  or '/etc/default/maldet', system dependant, to
+      allow easier configuration overrides; all conf.maldet and internals.conf variables supported
+[Change] scan reports and cli outputs once again display simplified path definitions instead of expanded paths
+[Change] unified all clamav selection logic for data paths, running clamd processes, clam(d)scan CLI options etc...
+         into a single function, clamselector(); this will make clam behavior more predictable across all functions
+[Change] added subdomains path for ISPConfig to cron.daily
+[Change] corrected variable naming semantics for import_*_(md5|hex)_url paramters
+[Change] monitor mode now identifies inotifywait processes based on a string pattern unique to maldet
+         to avoid conflicts with any other inotifywait processes
+[Change] added wget_proxy variable for us in sysconfig and conf.maldet options
 [Change] YARA-LMD curated signature set will now be included with signature updates
 [Change] differentiate signature hits for YARA with '{YARA}' signame prefix
 [Change] inotify_docroot now accepts comma or white spaced list of paths under user root to monitor
@@ -61,22 +75,21 @@ v1.6 | Feb 00 2017:
 [Change] clamscan will now respect scan_max_filesize value instead of hardcoded 5M
 [Change] default scan_max_filesize increased from 768k to 2048k
 [Change] clamscan max-scansize for archive depth set as scan_max_filesize*2
+[Fix] corrected typo with import_* variables causing configuration imports to fail
+[Fix] suppress eout() output for certain import_*() and get_remote_file() calls; this was causing
+      false-positive hits for modsec integration
 [Fix] install.sh may not have preserved certain variables on upgrade
-[Fix] clamdscan was running as a non-root user, would generate lstat errors for
-      all file find results leading to potential false positive hit/quarantine
-[Fix] the permissions of the $tmpdir path can cause clamd when running as a
-      non-root user to fail on startup due as a result of lstat errors on the
-      custom user signature files stored under $tmpdir
-[Fix] clamd.conf configurations containing Follow(File|Directory)Symlinks set
-      to false results in the rfxn.*/lmd.user.* links causing clamd startup
-      failures
-[Fix] suppress error output to cli for customer user signature files when they
-      do not exist
+[Fix] clamdscan was running as a non-root user, would generate lstat errors for all file find results
+      leading to potential false positive hit/quarantine
+[Fix] the permissions of the $tmpdir path can cause clamd when running as a non-root user to fail on
+      startup due as a result of lstat errors on the custom user signature files stored under $tmpdir
+[Fix] clamd.conf configurations containing Follow(File|Directory)Symlinks set to false results in
+      the rfxn.*/lmd.user.* links causing clamd startup failures
+[Fix] suppress error output to cli for customer user signature files when they do not exist
 [Fix] uninstall.sh now cleans up signature files from clamav data paths
-[Fix] corrected invalid matching against clamdscan binary when clamd was running
-      as non-root user
-[Fix] intofiywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified
-      to send stdout to logfile for better compatibility
+[Fix] corrected invalid matching against clamdscan binary when clamd was running as non-root user
+[Fix] intofiywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified to send stdout to logfile
+      for better compatibility
 [Fix] conditionally test for vz container and disable use of ionice which is not support in vz containers
 [Fix] '-k|--kill-monitor' would under certain circumstances leave zombie processes
 [Fix] monitor_cycle() could lead to memory depletion due to infinite loop cycle calls
@@ -94,23 +107,23 @@ v1.6 | Feb 00 2017:
 [Fix] double quote wrapped file name variables properly on restore*() functions
 [Fix] quarantine .info files were not properly recording source file atime,mtime,ctime values manual quarantine calls
 [Fix] user supplied paths to CLI are now better handled if they contain special characters
-[Fix] multiple user supplied paths to CLI would generate an error if the first path contained a space and subsequent paths did not
+[Fix] multiple user supplied paths to CLI would generate an error if the first path contained a space and
+      subsequent paths did not
 [Fix] commit c8a1279 introduced bug where clamav could be fed zero sized signature files resulting in fatal exit
 [Fix] public mode scanning will now properly error if mkpubpaths paths do not exist
 [Fix] hookscan.sh (modsec.sh) will now default to not using clamav if clamd is not running
-[Fix] though functional, public mode scanning would result in permission errors on console due to
-      pathing issues with history tracking files
-[Fix] clam(d)scan was not respecting values in 'ignore_sigs' file, this has been corrected for both
-      CLI and monitor mode
-[Fix] addition of prefixing eval to find command required certain values to be escaped differently
-      for proper function of '-r|--recent'
-[Fix] util-linux 2.23 supports 'column' command with '-o' but earlier versions do not, resulting
-      in scan reports generating empty hit lists
-[Fix] importconf was setting invalid vars for custom signature imports; correct variables are
-      import_sigs_md5_url and import_sigs_hex_url
+[Fix] though functional, public mode scanning would result in permission errors on console due to pathing issues with
+      history tracking files
+[Fix] clam(d)scan was not respecting values in 'ignore_sigs' file, this has been corrected for both CLI and monitor mode
+[Fix] addition of prefixing eval to find command required certain values to be escaped differently for proper function
+      of '-r|--recent'
+[Fix] util-linux 2.23 supports 'column' command with '-o' but earlier versions do not, resulting in scan reports
+      generating empty hit lists
+[Fix] importconf was setting invalid vars for custom signature imports; correct variables are import_custsigs_md5_url
+      and import_custsigs_hex_url
 [Fix] multiplying maldet monitor processes due to 'ps' command expansion under parent bash process on CentOS6
-[Fix] added default installation path to ignore_inotify to prevent monitor looping when
-      '/' is scoped into monitoring mode; results in notify log filling disk space
+[Fix] added default installation path to ignore_inotify to prevent monitor looping when '/' is scoped into
+      monitoring mode; results in notify log filling disk space
 
 v1.5 | Sep 19 2015:
 [New] added -f|--file-list CLI option to allow user supplied run-time file list for scanning
@@ -126,7 +139,7 @@ v1.5 | Sep 19 2015:
       "clean/custom.signame"; rules are preserved across signature and version updates
 [New] added support for clam(d) engine when running in inotify monitoring mode
 [New] added URL import feature for global configuration overrides using import_config_url variable in conf.maldet
-[New] added URL import feature for user custom signatures using import_sigs_md5_url & import_sigs_hex_url variables in conf.maldet
+[New] added URL import feature for user custom signatures using import_custsigs_md5_url & import_custsigs_hex_url variables in conf.maldet
 [New] added set of defined exit codes for errored exits(1), successful runs with hits(2), successful runs with no hits(0)
 [New] added uninstall.sh script to maldetect installation path
 [New] added md5 hash verification of signature and version update downloads

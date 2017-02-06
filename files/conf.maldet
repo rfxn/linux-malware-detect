@@ -60,12 +60,12 @@ import_config_url=""
 # for most setups.
 import_config_expire="43200"
 
-# When defined, the import_sigs_*_url options allow for the custom signature
+# When defined, the import_custsigs_*_url options allow for the custom signature
 # files to be downloaded from a remote URL. THIS WILL OVERWRITE ANY LOCAL CUSTOM
 # SIGNATURE FILES! It is recommended for large-scale deployments to define these
 # variables within a import_config_url file.
-import_sigs_md5_url=""
-import_sigs_hex_url=""
+import_custsigs_md5_url=""
+import_custsigs_hex_url=""
 
 ##
 # [ SCAN OPTIONS ]

@@ -14,7 +14,7 @@ ELAPSED:   ${scan_et}s [find: ${file_list_et}s]
 EOF
 fi
 if [ "$spath" ]; then
-	echo "PATH:          $spath" >> $tmpf
+	echo "PATH:          $hrspath" >> $tmpf
 fi
 if [ "$days" ] && [ ! "$days" == "all" ]; then
 	echo "RANGE:         $days days" >> $tmpf
