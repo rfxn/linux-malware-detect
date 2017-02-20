@@ -55,14 +55,17 @@ autoupdate_version_hashed="1"
 # parsed followed by the imported configuration file. As such, only variables
 # defined in the imported configuration file are overridden and a full set of
 # configuration options is not explicitly required in the imported file.
-# [ some IP use dns caption recommendation goes here ]
-import_config_url=""
+import_config_url="$import_config_url"
+
+# The expiry interval for refreshing the local cached version of the imported
+# configuration file. The default is every 12h (43200 sec) which should be ok
+# for most setups.
+import_config_expire="$import_config_expire"
 
 # When defined, the import_custsigs_*_url options allow for the custom signature
 # files to be downloaded from a remote URL. THIS WILL OVERWRITE ANY LOCAL CUSTOM
 # SIGNATURE FILES! It is recommended for large-scale deployments to define these
 # variables within a import_config_url file.
-# [ some IP use dns caption recommendation goes here ]
 import_custsigs_md5_url="$import_custsigs_md5_url"
 import_custsigs_hex_url="$import_custsigs_hex_url"
 

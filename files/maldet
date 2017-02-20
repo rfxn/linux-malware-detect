@@ -60,9 +60,6 @@ fi
 # prerun operations
 prerun
 
-# import any remote configuration data
-import_conf
-
 if [ -z "$1" ]; then
 	header
 	usage_short
@@ -302,6 +299,9 @@ else
 		shift
 	done
 fi
+
+# import any remote configuration data
+import_conf
 
 # postrun operations
 postrun

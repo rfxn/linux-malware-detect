@@ -11,6 +11,7 @@ fi
 quarantine_hits=1
 quarantine_clean=0
 scan_tmpdir_paths=''
+hscan=1
 
 isclamd=`pidof clamd 2> /dev/null`
 if [ "$isclamd" ] && [ -f "$clamdscan" ]; then
@@ -24,4 +25,4 @@ if [ -f "$hookcnf" ]; then
         source $hookcnf
 fi
 
-cd /tmp ; $inspath/maldet --config-option quarantine_hits=$quarantine_hits,quarantine_clean=$quarantine_clean,tmpdir=/var/tmp,scan_tmpdir_paths=$scan_tmpdir_paths,scan_clamscan=$clamd_scan --hook-scan -a "$file"
+cd /tmp ; $inspath/maldet --hook-scan --config-option quarantine_hits=$quarantine_hits,quarantine_clean=$quarantine_clean,tmpdir=/var/tmp,scan_tmpdir_paths=$scan_tmpdir_paths,scan_clamscan=$clamd_scan -a "$file"
