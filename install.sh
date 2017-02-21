@@ -39,7 +39,7 @@ if [ ! -d "$inspath" ] && [ -d "files" ]; then
 	done
 	killall -SIGUSR2 clamd 2> /dev/null
 else
-	if [ "$(ps -A --user root -o "cmd" | grep maldetect | grep inotifywait)" ]; then
+	if [ "$(ps -A --user root -o "cmd" 2> /dev/null | grep maldetect | grep inotifywait)" ]; then
 		$inspath/maldet -k >> /dev/null 2>&1
 		monmode=1
 	fi
