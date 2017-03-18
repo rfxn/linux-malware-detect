@@ -1,4 +1,4 @@
-v1.6 | Feb 00 2017:
+v1.6 | Mar 17 2017:
 [New] added curated set of YARA webshell & malware signatures for use with ClamAV >= 0.99b
 [New] added cleaner rule 'VistorTracker.Mob'
 [New] added cleaner rule 'js.inject.fakejquery02'
