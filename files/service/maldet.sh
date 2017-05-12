@@ -35,7 +35,7 @@ if [ -f "/etc/sysconfig/maldet" ]; then
 	. /etc/sysconfig/maldet
 elif [ -f "/etc/default/maldet" ]; then
 	. /etc/default/maldet
-elif [ "$(egrep ^default_monitor_mode $cnf 2> /dev/null)" ]; then
+elif [ "$(grep -E ^default_monitor_mode $cnf 2> /dev/null)" ]; then
 	. $cnf
 	if [ "$default_monitor_mode" ]; then
 		MONITOR_MODE="$default_monitor_mode"
