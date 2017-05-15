@@ -43,7 +43,7 @@ else
 		$inspath/maldet -k >> /dev/null 2>&1
 		monmode=1
 	fi
-	$find ${inspath}.* -maxdepth 0 -type d -mtime +30 | xargs rm -rf
+	$find ${inspath}.* -maxdepth 0 -type d -mtime +30 2> /dev/null | xargs rm -rf
 	mv $inspath $inspath.bk$$
 	ln -fs $inspath.bk$$ $inspath.last
 	mkdir -p $inspath
@@ -86,36 +86,39 @@ if [ -d "/etc/cron.d" ]; then
 fi
 
 if [ "$(uname -s)" != "FreeBSD" ]; then
-	if test `cat /proc/1/comm` = "systemd"
-	then
-		mkdir -p /etc/systemd/system/
-		mkdir -p /usr/lib/systemd/system/
-		cp -af ./files/service/maldet.service /usr/lib/systemd/system/
-		systemctl daemon-reload
-		systemctl enable maldet.service
+        if test "$(cat /proc/1/comm 2> /dev/null)" == "systemd"
+        then
+                mkdir -p /etc/systemd/system/
+                mkdir -p /usr/lib/systemd/system/
+                cp -af ./files/service/maldet.service /usr/lib/systemd/system/
+                systemctl daemon-reload
+                systemctl enable maldet.service
 	else
-		cp -af ./files/service/maldet.sh /etc/init.d/maldet
-		chmod 755 /etc/init.d/maldet
-		if [ -f /etc/redhat-release ]; then
-			if [ ! -f "/etc/sysconfig/maldet" ]; then
-				cp -f ./files/service/maldet.sysconfig /etc/sysconfig/maldet
-			fi
-			/sbin/chkconfig maldet on
-		elif [ -f /etc/debian_version ] || [ -f /etc/lsb-release ]; then
-			if [ ! -f "/etc/default/maldet" ]; then
-				cp -f ./files/service/maldet.sysconfig /etc/default/maldet
-			fi
-			update-rc.d -f maldet remove
-			update-rc.d maldet defaults 70 30
-		elif [ -f /etc/gentoo-release ]; then
-			rc-update add maldet default
-		elif [ -f /etc/slackware-version ]; then
-			ln -sf /etc/init.d/maldet /etc/rc.d/rc3.d/S70maldet
-			ln -sf /etc/init.d/maldet /etc/rc.d/rc4.d/S70maldet
-			ln -sf /etc/init.d/maldet /etc/rc.d/rc5.d/S70maldet
-		else
-			/sbin/chkconfig maldet on
+                cp -af ./files/service/maldet.sh /etc/init.d/maldet
+                chmod 755 /etc/init.d/maldet
+		chkconfig --level 2345 maldet on
+	fi
+	if [ -f /etc/redhat-release ]; then
+		if [ ! -f "/etc/sysconfig/maldet" ]; then
+			cp -f ./files/service/maldet.sysconfig /etc/sysconfig/maldet
 		fi
+	elif [ -f /etc/debian_version ] || [ -f /etc/lsb-release ]; then
+		if [ ! -f "/etc/default/maldet" ]; then
+			cp -f ./files/service/maldet.sysconfig /etc/default/maldet
+		fi
+		update-rc.d -f maldet remove
+		update-rc.d maldet defaults 70 30
+	elif [ -f /etc/gentoo-release ]; then
+		rc-update add maldet default
+	elif [ -f /etc/slackware-version ]; then
+		ln -sf /etc/init.d/maldet /etc/rc.d/rc3.d/S70maldet
+		ln -sf /etc/init.d/maldet /etc/rc.d/rc4.d/S70maldet
+		ln -sf /etc/init.d/maldet /etc/rc.d/rc5.d/S70maldet
+	else
+		if [ ! -f "/etc/sysconfig/maldet" ]; then
+			cp -f ./files/service/maldet.sysconfig /etc/sysconfig/maldet 2> /dev/null
+		fi
+		/sbin/chkconfig maldet on
 	fi
 fi
 

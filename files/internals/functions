@@ -15,6 +15,9 @@ lbreakifs() {
 }
 
 prerun() {
+    
+    startdir=$(pwd);
+    
 	if [ ! "$(whoami)" == "root" ]; then
 		if [ -z "$scan_user_access" ] || [ "$scan_user_access" == "0" ]; then
 			args="$@"
@@ -76,12 +79,6 @@ prerun() {
 	if [ ! -d "$quardir" ]; then
 		mkdir -p $quardir
 		chmod 750 $quardir
-	fi
-	
-	if [ -z "$wget" ]; then
-		header
-		echo "could not find required binary wget, aborting."
-		exit 1
 	fi
 	
 	if [ -z "$md5sum" ]; then
@@ -161,7 +158,7 @@ prerun() {
 		nice_command="$nice_command $ionice -c2 -n $scan_ionice"
 	fi
 	if [ -f "$cpulimit" ] && [ "$scan_cpulimit" -gt 2> /dev/null "0" ]; then
-		max_cpulimit=$[$(egrep -w processor /proc/cpuinfo -c)*100]
+		max_cpulimit=$[$(grep -E -w processor /proc/cpuinfo -c)*100]
 		if [ "$scan_cpulimit" -gt "$max_cpulimit" ]; then
 			scan_cpulimit="0"
 		else
@@ -226,17 +223,17 @@ clean_exit() {
 }
 
 get_remote_file() {
-	# $1 = URI, $2 = service identifier, $3 boolean do referrer identify, $4 boolean verbose
+	# $1 = URI, $2 = local service identifier, $3 boolean verbose
 	get_uri="$1"
 	service="$2"
-	doid="$3"
-	verbose="$4"
+	verbose="$3"
+	save_path="$4"
 	unset return_file
 	if [ "$hscan" ]; then
 		unset verbose
 	fi
 	if [ -z "$get_uri" ]; then
-		eout "{internal} missing or invalid URI passed to get_remote_files" 1
+		eout "{internal} missing or invalid URI passed to get_remote_file()" 1
 		break
 	fi
 	if [ -z "$service" ]; then
@@ -244,15 +241,56 @@ get_remote_file() {
 	else
 		svc="$service"
 	fi
-	if [ "$doid" == "1" ]; then
-		id="--referer=\"$lmd_referer\""
+
+	if [ -f "$curl" ] || [ -f "/usr/bin/curl" ]; then
+		get_type="curl"
+		if [ -z "$curl" ]; then
+			get_bin="/usr/bin/curl"
+		else
+			get_bin="$curl"
+		fi
+	elif [ -f "$wget" ] || [ -f "/usr/bin/wget" ]; then
+		get_type="wget"
+		if [ -z "$wget" ]; then
+			get_bin="/usr/bin/wget"
+		else
+			get_bin="$wget"
+		fi
 	else
-		id=""
+		eout "{internal} could not find curl or wget binaries for remote file downloads, fatal error!"
+		exit 1
 	fi
-	tmpf="$tmpdir/.tmpf_get.${RANDOM}"
-	touch $tmpf ; chmod 700 $tmpf
-	get_file=`echo "$get_uri" | tr '/' '\n' | tail -n1`
-	$wget $id -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q $get_uri -O $tmpf || wget_return=$?
+
+	if [ "$lmd_referer" ] && [ "$get_type" == "curl" ]; then
+		id="--referer ${lmd_referer}:curl"
+	elif [ "$lmd_referer" ] && [ "$get_type" == "wget" ]; then
+		id="--referer=${lmd_referer}:wget"
+	fi
+
+	if [ "$get_type" == "curl" ]; then
+		if [ "$web_proxy" ]; then
+			get_proxy_arg="-x http://$web_proxy"
+		fi
+		get_opts="-s $get_proxy_arg --connect-timeout $remote_uri_timeout --retry $remote_uri_retries $id"
+		get_output_arg='-o'
+	elif [ "$get_type" == "wget" ]; then
+		if [ "$web_proxy" ]; then
+			get_proxy_arg="-e http_proxy=$web_proxy -e https_proxy=$web_proxy"
+		fi
+		get_opts="-q $get_proxy_arg --timeout=$remote_uri_timeout --tries=$remote_uri_retries $id"
+		get_output_arg='-O'
+	fi
+
+	if [ "$save_path" ]; then
+		tmpf="$save_path"
+	else
+		tmpf="$tmpdir/.tmpf_get.${RANDOM}"
+		touch $tmpf ; chmod 600 $tmpf
+		get_file=`echo "$get_uri" | tr '/' '\n' | tail -n1`
+	fi
+
+	$get_bin $get_opts "$get_uri" $get_output_arg "$tmpf" || get_return=$?
+
 	if [ ! -f "$tmpf" ] || [ ! -s "$tmpf" ]; then
 		eout "{$svc} could not download $get_uri, please try again later." $verbose
 		unset return_file
@@ -260,18 +298,19 @@ get_remote_file() {
 		eout "{$svc} downloaded $get_uri"
 		return_file="$tmpf"
 	fi
+
 }
 
 import_user_sigs() {
 	if [ "$import_custsigs_md5_url" ]; then
-		get_remote_file "$import_custsigs_md5_url" "importsigs" "0" "1"
+		get_remote_file "$import_custsigs_md5_url" "importsigs" "1"
 		if [ -f "$return_file" ]; then
 			cp -f $return_file $sig_cust_md5_file
 			eout "{importsigs} imported custom signature data from $import_custsigs_md5_url"
 		fi
 	fi
 	if [ "$import_custsigs_hex_url" ]; then
-		get_remote_file "$import_custsigs_hex_url" "importsigs" "0" "1"
+		get_remote_file "$import_custsigs_hex_url" "importsigs" "1"
 		if [ -f "$return_file" ]; then
 			cp -f $return_file $sig_cust_hex_file
 			eout "{importsigs} imported custom signature data from $import_custsigs_hex_url"
@@ -298,7 +337,7 @@ import_conf() {
 	fi
 	if [ "$import_config_url" ]; then
 		if [ -z "$import_config_skip" ]; then
-			get_remote_file "$import_config_url" "importconf" "0" "1"
+			get_remote_file "$import_config_url" "importconf" "1"
 			if [ -f "$return_file" ]; then
 				cp -f $return_file $sessdir/.import_conf.cache
 				echo "$current_utime" > $sessdir/.import_conf.utime
@@ -427,8 +466,8 @@ usage $0 [ OPTION ]
     -p, --purge
        Clear logs, quarantine queue, session and temporary data.
 
-    --wget-proxy IP:PORT
-       Enable use of HTTPS proxy for all remote URL calls. 
+    --web-proxy IP:PORT
+       Enable use of HTTP/HTTPS proxy for all remote URL calls. 
 EOF
 }
 
@@ -444,7 +483,7 @@ clean() {
 	sh_hitname=`echo $hitname | sed -e 's/{HEX}//' -e 's/{MD5}//' | tr '.' ' ' | awk '{print$1"."$2"."$3}'`
 	if [ -d "$cldir" ] && [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ] && [ -f "$file" ]; then
 		if [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "${file}.info" ]; then
-			file_path=`egrep -v '\#' ${file}.info | cut -d':' -f9`
+			file_path=`grep -E -v '\#' ${file}.info | cut -d':' -f9`
 			eout "{clean} restoring $file for cleaning attempt" $v
 			restore "$file" >> /dev/null 2>&1
 			if [ -f "$cldir/$sh_hitname" ]; then
@@ -503,23 +542,23 @@ restore() {
         file="$1"
         fname=`basename "$file"`
         if [ -f "$quardir/$file" ] && [ -f "$quardir/${file}.info" ]; then
-                file_owner=`egrep -v '\#' "$quardir/${file}.info" | awk -F':' '{print$1}'`
-                file_group=`egrep -v '\#' "$quardir/${file}.info" | awk -F':' '{print$2}'`
-                file_mode=`egrep -v '\#' "$quardir/${file}.info"  | awk -F':' '{print$3}'`
-                file_size=`egrep -v '\#' "$quardir/${file}.info"  | awk -F':' '{print$4}'`
-                md5_hash=`egrep -v '\#' "$quardir/${file}.info"   | awk -F':' '{print$5}'`
-                file_path=`egrep -v '\#' "$quardir/${file}.info"  | cut -d':' -f9`
+                file_owner=`grep -E -v '\#' "$quardir/${file}.info" | awk -F':' '{print$1}'`
+                file_group=`grep -E -v '\#' "$quardir/${file}.info" | awk -F':' '{print$2}'`
+                file_mode=`grep -E -v '\#' "$quardir/${file}.info"  | awk -F':' '{print$3}'`
+                file_size=`grep -E -v '\#' "$quardir/${file}.info"  | awk -F':' '{print$4}'`
+                md5_hash=`grep -E -v '\#' "$quardir/${file}.info"   | awk -F':' '{print$5}'`
+                file_path=`grep -E -v '\#' "$quardir/${file}.info"  | cut -d':' -f9`
                 chown ${file_owner}.${file_group} "$quardir/$file" >> /dev/null 2>&1
                 chmod $file_mode "$quardir/$file" >> /dev/null 2>&1
                 mv -f "$quardir/$file" "$file_path"
                 eout "{restore} quarantined file $file restored to $file_path" 1
         elif [ -f "$file" ] && [ -f "${file}.info" ]; then
-                file_owner=`egrep -v '\#' "${file}.info" | awk -F':' '{print$1}'`
-                file_group=`egrep -v '\#' "${file}.info" | awk -F':' '{print$2}'`
-                file_mode=`egrep -v '\#' "${file}.info"  | awk -F':' '{print$3}'`
-                file_size=`egrep -v '\#' "${file}.info"  | awk -F':' '{print$4}'`
-                md5_hash=`egrep -v '\#' "${file}.info"   | awk -F':' '{print$5}'`
-                file_path=`egrep -v '\#' "${file}.info"  | cut -d':' -f9`
+                file_owner=`grep -E -v '\#' "${file}.info" | awk -F':' '{print$1}'`
+                file_group=`grep -E -v '\#' "${file}.info" | awk -F':' '{print$2}'`
+                file_mode=`grep -E -v '\#' "${file}.info"  | awk -F':' '{print$3}'`
+                file_size=`grep -E -v '\#' "${file}.info"  | awk -F':' '{print$4}'`
+                md5_hash=`grep -E -v '\#' "${file}.info"   | awk -F':' '{print$5}'`
+                file_path=`grep -E -v '\#' "${file}.info"  | cut -d':' -f9`
                 chown ${file_owner}.${file_group} "$file" >> /dev/null 2>&1
                 chmod $file_mode "$file" >> /dev/null 2>&1
                 mv -f "$file" "$file_path"
@@ -533,7 +572,7 @@ restore_hitlist() {
 	hitlist="$sessdir/session.hits.$1"
 	if [ -f "$hitlist" ]; then
 		lbreakifs set
-		is_autoquar=`tail -n1 $hitlist | awk -F'>' '{print$2}' | egrep -v '^$' | sed 's/.//'`
+		is_autoquar=`tail -n1 $hitlist | awk -F'>' '{print$2}' | grep -E -v '^$' | sed 's/.//'`
 		if [ "$is_autoquar" ]; then
 			for file in `cat $hitlist | cut -d':' -f2 | cut -d'>' -f2 | sed 's/.//'`; do
 				if [ -f "$file" ]; then
@@ -542,7 +581,7 @@ restore_hitlist() {
 			done
 		elif [ ! "$is_autoquar" ]; then
 			for file in `cat $hitlist | cut -d':' -f2 | sed 's/.//'`; do
-				quar_file=`cat $quar_history | egrep -w "$file" | cut -d':' -f8 | tail -n1`
+				quar_file=`cat $quar_history | grep -E -w "$file" | cut -d':' -f8 | tail -n1`
 				restore "$quar_file"
 			done
 		else
@@ -849,7 +888,7 @@ scan() {
 	days="$2"
 	scanid="$datestamp.$$"
 	if [ "$file_list" ]; then
-		spath="$file_list"
+		spath="\"$file_list\""
 	fi
 	if [ -f "$spath" ] && [ -z "$file_list" ]; then
 		single_filescan=1
@@ -907,7 +946,7 @@ scan() {
 	
 	hex_sigs=`$wc -l $sig_hex_file | awk '{print$1}'`
 	md5_sigs=`$wc -l $sig_md5_file | awk '{print$1}'`
-	yara_sigs=`egrep -c ^rule $sig_yara_file | awk '{print$1}'`
+	yara_sigs=`grep -E -c ^rule $sig_yara_file | awk '{print$1}'`
 	custhex_sigs=`$wc -l $sig_cust_hex_file | awk '{print$1}'`
 	custmd5_sigs=`$wc -l $sig_cust_md5_file | awk '{print$1}'`
 	cust_sigs=$[custhex_sigs+custmd5_sigs]
@@ -952,7 +991,7 @@ scan() {
 	fi
 		
 	if [ "$file_list" ]; then
-		cat $file_list | egrep -vf $ignore_paths > $find_results
+		cat $file_list | grep -E -vf $ignore_paths > $find_results
 	else
 		if [ "$single_filescan" ]; then
 			find_recentops=""
@@ -985,7 +1024,7 @@ scan() {
 		tmpscandir="$tmpdir/scan.$RANDOM"
 		mkdir -p "$tmpscandir" ; chmod 700 $tmpscandir ; cd $tmpscandir
 		eout "{scan} executed eval $nice_command $find $spath $spath_tmpdirs -maxdepth $scan_max_depth $find_opts -type f $find_recentopts -size +${scan_min_filesize}c -size -$scan_max_filesize $include_regex -not -perm 000 $exclude_regex $ignore_fext $ignore_root $ignore_user $ignore_group"
-		eval $nice_command $find /lmd_find/ $(echo $spath) $spath_tmpdirs -maxdepth $scan_max_depth $find_opts -type f $find_recentopts -size +${scan_min_filesize}c -size -$scan_max_filesize $include_regex -not -perm 000 $exclude_regex $ignore_fext $ignore_root $ignore_user $ignore_group 2> /dev/null | egrep -vf $ignore_paths > $find_results
+		eval $nice_command $find /lmd_find/ $(echo $spath) $spath_tmpdirs -maxdepth $scan_max_depth $find_opts -type f $find_recentopts -size +${scan_min_filesize}c -size -$scan_max_filesize $include_regex -not -perm 000 $exclude_regex $ignore_fext $ignore_root $ignore_user $ignore_group 2> /dev/null | grep -E -vf $ignore_paths > $find_results
 		cd $tmpdir
 		rm -rf $tmpscandir
 		if [ "$rscan" = "1" ] && [ "$LMDCRON" == "1" ] && [ "$scan_export_filelist" == "1" ]; then
@@ -1001,7 +1040,7 @@ scan() {
 			pkill -f lmd_find_sleep >> /dev/null 2>&1
 		fi
 	fi
-	if [ ! -f "$find_results" ] || [ -z "$(cat $find_results)" ]; then
+	if [ ! -f "$find_results" ] || [ ! -s "$find_results" ]; then
 		if [ -z "$hscan" ]; then
 			if [ "$days" == "all" ]; then
 				eout "{scan} scan returned empty file list; check that path exists and contains files in scope of configuration." 1
@@ -1058,15 +1097,15 @@ scan() {
 			echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan end"  >> $clamscan_log
 		fi
 		lbreakifs set
-		for hit in `egrep -v 'ERROR$|lstat()' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
+		for hit in `grep -E -v 'ERROR$|lstat()' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
 			file=`echo "$hit" | cut -d':' -f2`
 			signame=`echo "$hit" | cut -d':' -f1`
-			if [ ! -z "$(echo $signame | egrep 'YARA')" ]; then
+			if [ ! -z "$(echo $signame | grep -E 'YARA')" ]; then
                                 signame=`echo "$signame" | sed 's/YARA\./{YARA}/'`
-                        elif [ -z "$(echo $signame | egrep 'HEX|MD5')" ]; then
+                        elif [ -z "$(echo $signame | grep -E 'HEX|MD5')" ]; then
                                 signame="{CAV}$signame"
 			fi
-			ignore_hit=`echo $signame | egrep -vf $ignore_sigs`
+			ignore_hit=`echo $signame | grep -E -vf $ignore_sigs`
 			if [ ! -z "$ignore_hit" ]; then
 			 record_hit "$file" "$signame"
 			 quarantine "$file" "$signame"
@@ -1092,7 +1131,7 @@ scan() {
 			touch $scan_session
 		fi
 		
-		for rpath in `cat $find_results`; do
+		while read rpath; do
 			((cnt++))
 			if [ -z "$hscan" ] && [ ! "$set_background" == "1" ] && [ -z "$single_filescan" ]; then
 				tot_hit=`$wc -l $scan_session | awk '{print$1}'`
@@ -1103,7 +1142,7 @@ scan() {
 				scan_stage1 "$rpath" >> /dev/null 2>&1
 			fi
 			
-		done
+		done < $find_results
 		lbreakifs unset
 	fi
 	
@@ -1281,7 +1320,7 @@ genalert() {
 				fi
 			fi
 		elif [ "$type" == "daily" ] || [ "$type" == "digest" ]; then
-			scan_start_hr=`ps -p $(ps -A -o 'pid cmd' | egrep maldetect | egrep inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
+			scan_start_hr=`ps -p $(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
 			rm -f $tmpdir/.digest.alert.hits $tmpdir/.digest.clean.hits $tmpdir/.digest.monitor.alert $tmpdir/.digest.susp.hits
 			scanid="$datestamp.$$"
 			scan_session=`cat $sessdir/session.monitor.current`
@@ -1308,7 +1347,7 @@ genalert() {
 				fi
 				. $email_template
 				cp $tmpf $sessdir/session.$scanid
-				egrep '^{.*}' $sessdir/session.$scanid > $sessdir/session.hits.$scanid
+				grep -E '^{.*}' $sessdir/session.$scanid > $sessdir/session.hits.$scanid
 				echo "$scanid" > $sessdir/session.last
 				email_subj="${email_subj}: monitor summary"
 				cat $tmpf | $mail -s "$email_subj" $email_addr
@@ -1416,7 +1455,7 @@ monitor_cycle() {
 monitor_check() {
                 monitor_scanlist="$tmpdir/.monitor.scan.${RANDOM}${RANDOM}"
 		touch $monitor_scanlist ; chmod 600 $monitor_scanlist
-		$tlog $inotify_log inotify | grep -E "CREATE|MODIFY|MOVED_FROM|MOVED_TO" | egrep -v '/.. ' | awk '{print$1}' | sort | uniq > $monitor_scanlist
+		$tlog $inotify_log inotify | grep -E "CREATE|MODIFY|MOVED_FROM|MOVED_TO" | grep -E -v '/.. ' | awk '{print$1}' | sort | uniq > $monitor_scanlist
 		if [ "$scan_clamscan" == "1" ]; then
 	                clamscan_results="$tmpdir/.clamscan.result.${RANDOM}${RANDOM}"
 			touch $clamscan_results ; chmod 600 $clamscan_results
@@ -1428,15 +1467,15 @@ monitor_check() {
 				done
 			fi
 			lbreakifs set
-                	for hit in `egrep -v 'ERROR$|lstat()' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
+                	for hit in `grep -E -v 'ERROR$|lstat()' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
 	                        file=`echo "$hit" | cut -d':' -f2`
         	                signame=`echo "$hit" | cut -d':' -f1`
-	                        if [ ! -z "$(echo $signame | egrep 'YARA')" ]; then
+	                        if [ ! -z "$(echo $signame | grep -E 'YARA')" ]; then
                         	        signame=`echo "$signame" | sed 's/YARA\./{YARA}/'`
-                	        elif [ -z "$(echo $signame | egrep 'HEX|MD5')" ]; then
+                	        elif [ -z "$(echo $signame | grep -E 'HEX|MD5')" ]; then
         	                        signame="{CAV}$signame"
 	                        fi
-	                        ignore_hit=`echo $signame | egrep -vf $ignore_sigs`
+	                        ignore_hit=`echo $signame | grep -E -vf $ignore_sigs`
 				if [ -f "$file" ] && [ ! -z "$ignore_hit" ]; then
 	                        	record_hit "$file" "$signame"
 	        	                quarantine "$file" "$signame"
@@ -1627,7 +1666,7 @@ monitor_init() {
                 nice_command="$nice_command $ionice -c2 -n $inotify_ionice"
         fi
         if [ -f "$cpulimit" ] && [ "$inotify_cpulimit" -gt 2> /dev/null "0" ]; then
-                max_cpulimit=$[$(egrep -w processor /proc/cpuinfo -c)*100]
+                max_cpulimit=$[$(grep -E -w processor /proc/cpuinfo -c)*100]
                 if [ "$inotify_cpulimit" -gt "$max_cpulimit" ]; then
                         scan_cpulimit="0"
 		else
@@ -1656,7 +1695,7 @@ checkout() {
 	passwd=anonymous
 	upath=incoming
 	
-	cfile="$(pwd)/$file"
+	cfile="$startdir/$file"
 	if [ -f "$cfile" ]; then
 		file="$cfile"
 	fi
@@ -1724,7 +1763,7 @@ gensigs() {
 	ln -fs $runtime_ndb $sigdir/lmd.user.ndb 2> /dev/null
 	ln -fs $runtime_hdb $sigdir/lmd.user.hdb 2> /dev/null
 	if [ -s "$sig_cust_hex_file" ]; then
-		cat "$sig_hex_file" "$sig_cust_hex_file" > $runtime_hexstrings
+		cat "$sig_hex_file" <(echo) "$sig_cust_hex_file" | grep -vE '^\s*$' > $runtime_hexstrings
 	else
 		cat "$sig_hex_file" > $runtime_hexstrings
 	fi
@@ -1734,7 +1773,7 @@ gensigs() {
 	
 	if [ "$scan_clamscan" == "1" ]; then
 		if [ -s "$sig_cust_hex_file" ]; then
-			for i in `cat $sig_cust_hex_file | sed 's/{HEX}//' | tr ':' '%' | grep -vE "^$"`; do
+			for i in `cat $sig_cust_hex_file | sed 's/{HEX}//' | tr ':' '%' | grep -vE "^\s*$"`; do
 				name=`echo $i | tr '%' ' ' | awk '{print$2}'`
 				hex=`echo $i | tr '%' ' ' | awk '{print$1}'`
 				if [ ! -z "$name" ] && [ ! -z "$hex" ]; then
@@ -1746,7 +1785,7 @@ gensigs() {
 			cp $sig_cav_hex_file $runtime_ndb
 		fi
 		if [ -s "$sig_cust_md5_file" ]; then
-			cat $sig_cust_md5_file $sig_md5_file > $runtime_hdb
+			cat $sig_cust_md5_file <(echo) $sig_md5_file | grep -vE "^\s*$" | sort -u > $runtime_hdb
 		else
 			cp $sig_cav_md5_file $runtime_hdb
 		fi
@@ -1757,9 +1796,9 @@ sigignore() {
 	sil="$1"
 	chk=`$wc -l $ignore_sigs | awk '{print$1}'`
 	if [ ! "$chk" == "0" ]; then
-		cat $sig_hex_file | egrep -vf $ignore_sigs > $sig_hex_file.new
+		cat $sig_hex_file | grep -E -vf $ignore_sigs > $sig_hex_file.new
 		mv $sig_hex_file.new $sig_hex_file
-		cat $sig_md5_file | egrep -vf $ignore_sigs > $sig_md5_file.new
+		cat $sig_md5_file | grep -E -vf $ignore_sigs > $sig_md5_file.new
 		mv $sig_md5_file.new $sig_md5_file
 		chmod 640 $sig_md5_file $sig_hex_file
 		if [ "$sil" == "1" ] || [ "$hscan" == "1" ]; then
@@ -1777,8 +1816,8 @@ lmdup() {
 	mkdir -p $tmpwd ; chmod 700 $tmpwd
 	
 	eout "{update} checking for available updates..." 1
-	
-	$wget --referer="$lmd_referer" -q -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries "$lmd_version_url" -O $upstreamver >> /dev/null 2>&1
+        get_remote_file "$lmd_version_url" "update" "1"
+	upstreamver="$return_file"	
 	if [ -s "$upstreamver" ]; then
 		installedver=`echo $ver | tr -d '.'`
 		if [ "$(echo $installedver | wc -L)" -eq "2" ]; then
@@ -1786,14 +1825,21 @@ lmdup() {
 		fi
 		upstreamver_readable=`cat $upstreamver`
 		upstreamver=`cat $upstreamver | tr -d '.'`
+		if [ "$(echo $upstreamver | wc -L)" -eq "2" ]; then
+			upstreamver="${upstreamver}0"
+		fi
 		if [ "$upstreamver" -gt "$installedver" ]; then
 			eout "{update} new version $upstreamver_readable found, updating..." 1
+			doupdate=1
+		elif [ "$lmdup_force" ]; then
+			eout "{update} version update with --force requested, updating..." 1
 			doupdate=1
 		elif [ "$autoupdate_version_hashed" == "1" ]; then
 			eout "{update} hashing install files and checking against server..." 1
 			eval $md5sum $inspath/maldet $intfunc | awk '{print$1}' | tr '\n' ' ' | tr -d ' ' > $lmd_hash_file
 			upstreamhash="$tmpwd/.lmdup_hashcheck$$"
-			$wget --referer="$lmd_referer" -q -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries "$lmd_hash_url" -O $upstreamhash >> /dev/null 2>&1
+		        get_remote_file "$lmd_hash_url" "update" "1"
+			upstreamhash="$return_file"
 			if [ -s "$upstreamhash" ]; then
 				installed_hash=`cat $lmd_hash_file`
 				current_hash=`cat $upstreamhash`
@@ -1820,8 +1866,10 @@ lmdup() {
 	fi
 	if [ "$doupdate" ]; then
 		cd $tmpwd/
-		$wget --referer="$lmd_referer" -q -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries "${lmd_current_tgzbase_url}/${lmd_current_tgzfile}" -O "$tmpwd/${lmd_current_tgzfile}"
-		$wget --referer="$lmd_referer" -q -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries "${lmd_current_tgzbase_url}/${lmd_current_tgzfile}.md5" -O "$tmpwd/${lmd_current_tgzfile}.md5"
+
+                get_remote_file "${lmd_current_tgzbase_url}/${lmd_current_tgzfile}" "update" "1" "$tmpwd/${lmd_current_tgzfile}"
+                get_remote_file "${lmd_current_tgzbase_url}/${lmd_current_tgzfile}.md5" "update" "1" "$tmpwd/${lmd_current_tgzfile}.md5"
+
 		if [ -s "$tmpwd/${lmd_current_tgzfile}.md5" ] && [ -s "$tmpwd/${lmd_current_tgzfile}" ]; then
 			upstream_md5=`cat $tmpwd/${lmd_current_tgzfile}.md5 | awk '{print$1}'`
 			local_md5=`eval $md5sum $tmpwd/${lmd_current_tgzfile} | awk '{print$1}'`
@@ -1871,25 +1919,15 @@ sigup() {
 		eout "{sigup} local signature set is version $sig_version" 1
 	fi
 	
-	if [ ! -f "$wget" ]; then
-		eout "{sigup} could not locate wget command" 1
-		clean_exit
-		exit 1
-	fi
-	
-	tmpwd="$tmpdir/.sigup.$RANDOM.$$"
-	mkdir $tmpwd ; chmod 700 $tmpwd
-	tmpf="$tmpwd/.hver$$"
-	
-	$wget --referer="$lmd_referer" -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q $sig_version_url -O $tmpf
-	if [ ! -f "$tmpf" ] || [ ! -s "$tmpf" ]; then
+        get_remote_file "$sig_version_url" "sigup" "1"
+	upstream_sigver="$return_file"
+
+	if [ ! -f "$upstream_sigver" ] || [ ! -s "$upstream_sigver" ]; then
 		eout "{sigup} could not download signature data from server, please try again later." 1
-		cd $inspath
-		rm -rf $tmpwd
 		clean_exit
 		exit 1
 	else
-		nver=`cat $tmpf`
+		nver=`cat $upstream_sigver`
 	fi
 	
 	if [ -f "$sig_md5_file" ]; then
@@ -1909,6 +1947,9 @@ sigup() {
 	elif [ "$lines_md5" -lt "1000" ] || [ "$lines_hex" -lt "1000" ]; then
 		sig_version=2012010100000
 		eout "{sigup} signature files corrupted, forcing update..." 1
+	elif [ "$sigup_force" ]; then
+		sig_version=2012010100000
+		eout "{sigup} signature update with --force requested, forcing update..." 1
 	fi
 	
 	if [ "$nver" != "$sig_version" ]; then
@@ -1917,11 +1958,13 @@ sigup() {
 		eout "{sigup} new signature set ($nver) available" 1
 		
 		eout "{sigup} downloading $sig_sigpack_url" 1
-		$wget --referer="$lmd_referer" -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q $sig_sigpack_url -O $tmpwd/maldet-sigpack.tgz
-		$wget --referer="$lmd_referer" -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q ${sig_sigpack_url}.md5 -O $tmpwd/maldet-sigpack.tgz.md5
+		get_remote_file "$sig_sigpack_url" "sigup" "1" "$tmpwd/maldet-sigpack.tgz"
+	        get_remote_file "${sig_sigpack_url}.md5" "sigup" "1" "$tmpwd/maldet-sigpack.tgz.md5"
+
 		eout "{sigup} downloading $sig_clpack_url" 1
-		$wget --referer="$lmd_referer" -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q $sig_clpack_url -O $tmpwd/maldet-clean.tgz
-		$wget --referer="$lmd_referer" -e http_proxy="$wget_proxy" -e https_proxy="$wget_proxy" -T$wget_timeout -t$wget_retries -q ${sig_clpack_url}.md5 -O $tmpwd/maldet-clean.tgz.md5
+
+		get_remote_file "$sig_clpack_url" "sigup" "1" "$tmpwd/maldet-clean.tgz"
+		get_remote_file "${sig_clpack_url}.md5" "sigup" "1" "$tmpwd/maldet-clean.tgz.md5"
 		
 		if [ -f "$tmpwd/maldet-sigpack.tgz.md5" ]; then
 			sigpack_md5=`eval $md5sum maldet-sigpack.tgz | awk '{print$1}'`
@@ -1985,13 +2028,12 @@ sigup() {
 			clean_exit
 			exit 1
 		else
-			cat $tmpf > $sig_version_file
 			eout "{sigup} signature set update completed" 1
 			sigignore
 			
 			hex_sigs=`$wc -l $sig_hex_file | awk '{print$1}'`
 			md5_sigs=`$wc -l $sig_md5_file | awk '{print$1}'`
-			yara_sigs=`egrep -c ^rule $sig_yara_file | awk '{print$1}'`
+			yara_sigs=`grep -E -c ^rule $sig_yara_file | awk '{print$1}'`
 			if [ ! -f "$sig_cust_md5_file" ]; then
 				custhex_sigs=0
 			else

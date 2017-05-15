@@ -145,10 +145,10 @@ else
 					include_regex="-regex \"$1\""
 				fi
 			;;
-			--wget-proxy)
+			--wget-proxy|--curl-proxy|--web-proxy)
 				shift
 				if [ "$1" ]; then
-					wget_proxy="$1"
+					web_proxy="$1"
 				fi
 			;;
 			--alert-daily|--monitor-report)
@@ -258,17 +258,26 @@ else
 				header
 				purge
 			;;
-			-d|--update-ver|--update-version)
-				header
-				lmdup
-			;;
-			-u|--update|--update-sigs)
+                        -d|--update-ver|--update-version)
 				shift
-				if [ ! "$1" == "1" ]; then
-					header
+                                if [ ! "$1" == "1" ]; then
+                                        header
 				fi
-				sigup
-			;;
+				if [ "$1" == "--force" ]; then
+					lmdup_force=1
+                                fi
+                                lmdup
+                        ;;
+                        -u|--update|--update-sigs)
+                                shift
+                                if [ ! "$1" == "1" ]; then
+                                        header
+				fi
+				if [ "$1" == "--force" ]; then
+					sigup_force=1
+                                fi
+                                sigup
+                        ;;
 			-s|--restore)
 				header
 				shift
