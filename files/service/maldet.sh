@@ -20,6 +20,7 @@ intcnf="$inspath/internals/internals.conf"
 
 if [ -f "$intcnf" ]; then
 	source $intcnf
+	source $cnf
 else
 	echo "$intcnf not found."
 	exit 1
@@ -31,16 +32,17 @@ if [ -f /etc/init.d/functions ]; then
 elif [ -f /lib/lsb/init-functions ]; then
         . /lib/lsb/init-functions
 fi
+
 if [ -f "/etc/sysconfig/maldet" ]; then
 	. /etc/sysconfig/maldet
 elif [ -f "/etc/default/maldet" ]; then
 	. /etc/default/maldet
-elif [ "$(grep -E ^default_monitor_mode $cnf 2> /dev/null)" ]; then
-	. $cnf
-	if [ "$default_monitor_mode" ]; then
-		MONITOR_MODE="$default_monitor_mode"
-	fi
 fi
+
+if [ "$default_monitor_mode" ]; then
+	MONITOR_MODE="$default_monitor_mode"
+fi
+
 RETVAL=0
 prog="maldet"
 if [ -d /var/lock/subsys ]; then
