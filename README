@@ -1,4 +1,4 @@
-Linux Malware Detect v1.6
+Linux Malware Detect v1.6.1
             (C) 2002-2017, R-fx Networks <proj@r-fx.org>
             (C) 2017, Ryan MacDonald <ryan@r-fx.org>
 This program may be freely redistributed under the terms of the GNU GPL v2
@@ -236,10 +236,10 @@ option gives a detailed summary of usage options:
       Execute operations in the background, ideal for large scans
       e.g: maldet -b -r /home/?/public_html 7
 
-    -u, --update
+    -u, --update [--force]
        Update malware detection signatures from rfxn.com
 
-    -d, --update-ver
+    -d, --update-ver [--force]
        Update the installed version from rfxn.com
 
     -m, --monitor USERS|PATHS|FILE

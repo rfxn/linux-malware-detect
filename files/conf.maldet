@@ -1,5 +1,5 @@
 ##
-# Linux Malware Detect v1.6
+# Linux Malware Detect v1.6.1
 #             (C) 2002-2017, R-fx Networks <proj@r-fx.org>
 #             (C) 2017, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
@@ -47,6 +47,11 @@ autoupdate_version="1"
 # to the LMD executable, you should disable this feature.
 # [0 = disabled, 1 = enabled]
 autoupdate_version_hashed="1"
+
+# The retention period, in days, which quarantine, temporary files and stale
+# session information should be retained. Data older than this value is deleted
+# with the daily cron execution.
+cron_prune_days="21"
 
 # When defined, the import_config_url option allows a configuration file to be
 # downloaded from a remote URL. The local conf.maldet and internals.conf are
@@ -164,7 +169,7 @@ scan_ignore_group=""
 # [ 0 = disabled, 14400 = 4hr recommended timeout ]
 scan_find_timeout="0"
 
-# The daily cron 'find' operation performed by LMD detects recently created/modifed
+# The '-r|--recent' 'find' operation performed by LMD detects recently created/modifed
 # user files. This 'find' operation can be especially resource intensive and it may
 # be desirable to persist the file list results so that other applications/tasks
 # may make use of the results. When scan_export_filelist is set enabled, the most

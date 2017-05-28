@@ -1,5 +1,5 @@
 ##
-# Linux Malware Detect v1.6
+# Linux Malware Detect v1.6.1
 #             (C) 2002-2017, R-fx Networks <proj@r-fx.org>
 #             (C) 2017, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
@@ -105,7 +105,7 @@ prerun() {
 		exit 1
 	fi
 	
-	if [ ! -f "$mail" ]; then
+	if [ ! -f "$mail" ] || [ -z "$mail" ]; then
 		email_alert=0
 	fi
 	
@@ -383,10 +383,10 @@ usage $0 [ OPTION ]
       Execute operations in the background, ideal for large scans
       e.g: maldet -b -r /home/?/public_html 7
 
-    -u, --update-sigs
+    -u, --update-sigs [--force]
        Update malware detection signatures from rfxn.com
 
-    -d, --update-ver
+    -d, --update-ver [--force]
        Update the installed version from rfxn.com
 
     -f, --file-list
@@ -726,7 +726,7 @@ record_hit() {
 		file_stat "$file" 1
 		file_name=`basename "$file" 2> /dev/null`
 		if [ ! "$md5_hash" ]; then
-			md5_hash=`eval $md5sum "$file" | awk '{print$1}'`
+			md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 		fi
 		eout "{hit} malware hit $hitname found for $file"
 		echo "${utime}:${hostid}:${hitname}:${md5_hash}:${file_size}:${file_owner}.${file_group}:${file_mode}:${file_times}:${file}" >> $hits_history
@@ -782,7 +782,7 @@ quar_hitlist() {
 				file_name=`basename "$file"`
 				file_namewc=`echo "$file_name" | $wc -m`
 				if [ ! "$md5_hash" ]; then
-					md5_hash=`eval $md5sum "$file" | awk '{print$1}'`
+					md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 				fi
 				if [ "$pub" == "1" ]; then
 					chattr -ia "$file" >> /dev/null 2>&1
@@ -1027,7 +1027,7 @@ scan() {
 		eval $nice_command $find /lmd_find/ $(echo $spath) $spath_tmpdirs -maxdepth $scan_max_depth $find_opts -type f $find_recentopts -size +${scan_min_filesize}c -size -$scan_max_filesize $include_regex -not -perm 000 $exclude_regex $ignore_fext $ignore_root $ignore_user $ignore_group 2> /dev/null | grep -E -vf $ignore_paths > $find_results
 		cd $tmpdir
 		rm -rf $tmpscandir
-		if [ "$rscan" = "1" ] && [ "$LMDCRON" == "1" ] && [ "$scan_export_filelist" == "1" ]; then
+		if [ "$rscan" = "1" ] && [ "$scan_export_filelist" == "1" ]; then
 			rm -f  $tmpdir/.find_results.* 2> /dev/null ; cp $find_results $tmpdir/.find_results.shared.$$ 2> /dev/null
 			ln -fs $tmpdir/.find_results.shared.$$ $tmpdir/find_results.last 2> /dev/null
 		fi
@@ -1073,6 +1073,9 @@ scan() {
 		eout "{scan.hook} scan of $spath in progress (id: $datestamp.$$)"
 	fi
 	cnt=0
+	if [ -z "$mail" ]; then
+		eout "{scan} no \$mail binary found, e-mail alerts disabled."
+	fi
 	if [ -f "$clamscan" ] && [ "$scan_clamscan" == "1" ]; then
 		if [ -z "$hscan" ]; then
 			eout "{scan} found clamav binary at $clamscan, using clamav scanner engine..." 1
@@ -1217,7 +1220,7 @@ scan_strlen() {
 scan_stage1() {
 	file="$1"
 	clchk="$2"
-	hash=`eval $md5sum "$file" | awk '{print$1}'`
+	hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 	if  [ ! -z "$hash" ]; then
 		val_hash=`grep -m1 $hash $sig_cust_md5_file $sig_md5_file`
 		if [ ! -z "$val_hash" ]; then
