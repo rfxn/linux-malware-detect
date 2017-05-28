@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 ##
-# Linux Malware Detect v1.6
+# Linux Malware Detect v1.6.1
 #             (C) 2002-2017, R-fx Networks <proj@rfxn.com>
 #             (C) 2017, Ryan MacDonald <ryan@rfxn.com>
 # This program may be freely redistributed under the terms of the GNU GPL v2
 ##
 #
 PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
-ver=1.6
+ver=1.6.1
 inspath='/usr/local/maldetect'
 intcnf="$inspath/internals/internals.conf"
 if [ -f "/etc/sysconfig/maldet" ]; then

@@ -1,3 +1,30 @@
+v1.6.1 | May 28 2017:
+[New] added conf.maldet option cron_prune_days to configure cron.daily pruning max age of quar/sess/tmp data; issue #197
+[New] added curl support, as new default, into get_remote_file; wget support is preserved secondary to curl; issue #200
+[New] added --force option on -u|--update-sigs
+[New] added --force option on -d|--update-ver
+[New] added empty lines cleaner for runtime signatures and sorting of hdb for better performance; pr #223
+[Change] modified default prune interval of quarantine/sess/tmp data from older than 7d to 21d
+[Change] set email alerts to disabled when -z $mail / issue verbose warning on CLI; issue #220
+[Change] scan_export_filelist feature had no real need to be limited to just cron runs;
+[Change] updated help and README to reflect '--force' option on '-u|--update-sigs' and '-d|--update-ver'
+[Change] post-change to get_remote_file(); signature version file was truncating with tmp file for maldet-clean
+[Change] replaced all calls of wget with get_remote_file()
+[Change] refactored get_remote_file() to be more generic / not depend on wget
+[Change] increased default values for wget --timeout from 5 to 10 seconds
+[Change] replace egrep with posix 'grep -E'; direct invocation of egrep/fgrep is deprecated; pr #214
+[Fix] modified sourcing of conf files and order of precedence in mald…et.sh init script to properly
+      treat default_monitor_mode being defined in conf.maldet; issue #224
+[Fix] escape quotes within eval md5sum command as fix for issues #230 and #216
+         modified so when set, it will export find results for all '-r|--recent' scans
+[Fix] test condition for systemd was generating unary errors on older versions of bash; pr #36
+[Fix] systemd based systems were skipping addition of sysconfig entry; pr #36
+[Fix] install.sh find operation to prune old install backups was generating error when no previous installs existed
+[Fix] wgetopt was single quoted making the variables inside of it strings, set double quotes
+[Fix] potential out of memory issue while scanning a large set of files on native LMD scanner; pr #223
+[Fix] -f option issue with relative path message; pr #223
+[Fix] issue with checkout of relative file path for non root user; pr #223
+
 v1.6 | Mar 17 2017:
 [New] added curated set of YARA webshell & malware signatures for use with ClamAV >= 0.99b
 [New] added cleaner rule 'VistorTracker.Mob'
