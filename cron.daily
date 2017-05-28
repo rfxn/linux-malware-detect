@@ -34,12 +34,16 @@ if [ -z "$scan_days" ]; then
 	scan_days=1
 fi
 
+if [ -z "$cron_prune_days" ]; then
+	cron_prune_days=21
+fi
+
 if [ "$find" ]; then
 	# prune any quarantine/session/tmp data older than 7 days
 	tmpdirs="$tmpdir $varlibpath/sess $varlibpath/quarantine $varlibpath/pub"
 	for dir in $tmpdirs; do
 	 if [ -d "$dir" ]; then
-	  $find $dir -type f -mtime +7 -print0 | xargs -0 rm -f >> /dev/null 2>&1
+	  $find $dir -type f -mtime +${cron_prune_days} -print0 | xargs -0 rm -f >> /dev/null 2>&1
 	 fi
 	done
 fi

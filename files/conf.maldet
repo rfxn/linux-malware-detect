@@ -48,6 +48,11 @@ autoupdate_version="1"
 # [0 = disabled, 1 = enabled]
 autoupdate_version_hashed="1"
 
+# The retention period, in days, which quarantine, temporary files and stale
+# session information should be retained. Data older than this value is deleted
+# with the daily cron execution.
+cron_prune_days="21"
+
 # When defined, the import_config_url option allows a configuration file to be
 # downloaded from a remote URL. The local conf.maldet and internals.conf are
 # parsed followed by the imported configuration file. As such, only variables
