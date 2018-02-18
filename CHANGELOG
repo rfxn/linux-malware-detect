@@ -58,7 +58,7 @@ v1.6 | Mar 17 2017:
 [Change] unified all clamav selection logic for data paths, running clamd processes, clam(d)scan CLI options etc...
          into a single function, clamselector(); this will make clam behavior more predictable across all functions
 [Change] added subdomains path for ISPConfig to cron.daily
-[Change] corrected variable naming semantics for import_*_(md5|hex)_url paramters
+[Change] corrected variable naming semantics for import_*_(md5|hex)_url parameters
 [Change] monitor mode now identifies inotifywait processes based on a string pattern unique to maldet
          to avoid conflicts with any other inotifywait processes
 [Change] added wget_proxy variable for us in sysconfig and conf.maldet options
