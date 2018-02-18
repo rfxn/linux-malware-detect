@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:$PATH
 echo "This will completely remove Linux Malware Detect from your server including all quarantine data!"
-echo -n "Would you like to proceeed? "
+echo -n "Would you like to proceed? "
 read -p "[y/n] " -n 1 Z
 echo
 if [ "$Z" == "y" ] || [ "$Z" == "Y" ]; then
