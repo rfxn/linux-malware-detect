@@ -368,7 +368,7 @@ v1.4.0 | Apr 17th 2011:
 [Change] wget calls now use the --referer option to broadcast local LMD version
 [Fix] replaced stray references of absolute install path with the install path variable
 [New] stage2 (HEX) scanner now supports use of named pipe (FIFO) for passing file hex contents,
-      enabled by default, provides better performance with larger depth anlaysis of files
+      enabled by default, provides better performance with larger depth analysis of files
 [New] added hex_fifo_scan & hex_fifo_depth variables to conf.maldet for fifo hex scanning
 [Change] -c|--checkout now supports directory paths
 [Change] -r|--scan-recent and -a|--scan-all now supports single file scans
