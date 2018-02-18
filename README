@@ -437,7 +437,7 @@ cron will ensure new users have paths created no later than 10 minutes after cre
 
 All non-root scans, such as those performed under mod_security2, will be stored under the
 /usr/local/maldetect/pub/username directory tree. The quarantine paths are relative to the user
-that exectues the scan, so user nobody would be under pub/nobody/quar/. The actual paths
+that executes the scan, so user nobody would be under pub/nobody/quar/. The actual paths
 for where files are quarantined and the user which executed the scan, can be verified in the
 e-mail reports for upload hits.
 
