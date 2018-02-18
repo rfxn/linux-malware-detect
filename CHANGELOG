@@ -216,7 +216,7 @@ v1.5 | Sep 19 2015:
 [Change] reordered configuration file, expanded on variable descriptions, overall attempt to simplify/streamline conf.maldet
 [Change] installer symlinks LMD signatures into known/existing ClamAV paths to ensure signatures are loaded into memory by clamd
 [Change] installer issues SIGUSR2 to any running clamd processes to force reload of signature databases
-[Change] cron.daily signature updates issue SIGUSR2 to any running clamd processes to force reload of siganture databases
+[Change] cron.daily signature updates issue SIGUSR2 to any running clamd processes to force reload of signature databases
 [Change] cron.daily signature/version updates sleep random interval 1-999 secs before contacting upstream rfxn.com servers to reduce cdn load
 [Change] modified clamscan database path checks to support cPanel >=11.40 RPM clamAV connector RPM's
 [Change] modified location of statistical data files from tmpdir to sessdir making tmpdir a stateless path that can be purged at anytime
