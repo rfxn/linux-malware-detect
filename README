@@ -206,7 +206,7 @@ in conf.maldet.
 There are four ignore files available and they break down as follows:
 
 /usr/local/maldetect/ignore_paths
-A line spaced file for paths that are to be execluded from search results
+A line spaced file for paths that are to be excluded from search results
  Sample ignore entry:
  /home/user/public_html/cgi-bin
 
