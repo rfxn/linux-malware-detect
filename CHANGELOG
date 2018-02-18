@@ -183,7 +183,7 @@ v1.5 | Sep 19 2015:
 [New] added set of defined exit codes for errored exits(1), successful runs with hits(2), successful runs with no hits(0)
 [New] added uninstall.sh script to maldetect installation path
 [New] added md5 hash verification of signature and version update downloads
-[New] added scan_cpunice option to control CPU priorty value of all scan operations such as find, clamscan etc.. (default 19)
+[New] added scan_cpunice option to control CPU priority value of all scan operations such as find, clamscan etc.. (default 19)
 [New] added scan_ionice option to control IO priority value of all scan operations such as find, clamscan etc.. (default 6)
 [New] added autoupdate_signatures/autoupdate_version options to control daily cron based signature/version updates
 [New] added autoupdate_version_hashed option to control validating hash of maldet executable against upstream version
