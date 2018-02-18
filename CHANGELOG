@@ -483,7 +483,7 @@ v1.3.3 | May 15th 2010:
 [New] added quar_susp_minuid option for suspend user minimum user id
 [Fix] inotify monitor now properly acts on MODIFY,MOVE_TO,MOVE_FROM states
 [Change] inotify monitor now can take a list of paths or file for path input
-[Change] inotify monitor now has no default use, must specifiy USER|FILE|PATHS
+[Change] inotify monitor now has no default use, must specify USER|FILE|PATHS
 [Change] revised short and long usage output for new options/usage changes
 [Change] inotify monitor now spawns only one process for all monitored paths
 [Change] inotify monitor sets max_user_instances to processors*2
