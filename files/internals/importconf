@@ -127,7 +127,7 @@ scan_tmpdir_paths="/tmp /var/tmp /dev/shm"
 # Allows non-root users to perform scans. This must be enabled when
 # using mod_security2 upload scanning or if you want to allow users
 # to perform scans. When enabled, this will populate 'pub/' with user
-# owned quarantine, session and temporary paths to faciliate scans.
+# owned quarantine, session and temporary paths to facilitate scans.
 # [ 0 = disabled, 1 = enabled, disabled by default ]
 scan_user_access="$scan_user_access"
 

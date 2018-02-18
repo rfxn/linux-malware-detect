@@ -371,7 +371,7 @@ inotify processes.
 The support for HTTP upload scanning is provided through mod_security2's inspectFile hook.
 This feature allows for a validation script to be used in permitting or denying an upload. 
 
-The convenience script to faciliate this is called hookscan.sh and is located in the
+The convenience script to facilitate this is called hookscan.sh and is located in the
 /usr/local/maldetect installation path. The default setup is to run a standard maldet scan
 with no clamav support, no cleaner rule executions and quarantining enabled; these options
 are set in the interest of performance vs accuracy which is a fair tradeoff. 
