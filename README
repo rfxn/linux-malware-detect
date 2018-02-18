@@ -196,7 +196,7 @@ project.
 The configuration of LMD is handled through /usr/local/maldetect/conf.maldet
 and all options are well commented for ease of configuration.
 
-By default LMD has the auto-qurantine of files disabled, this will mean that
+By default LMD has the auto-quarantine of files disabled, this will mean that
 YOU WILL NEED TO ACT on any threats detected or pass the SCANID to the '-q'
 option to batch quarantine the results. To change this please set quar_hits=1
 in conf.maldet.
