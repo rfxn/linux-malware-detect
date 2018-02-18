@@ -42,7 +42,7 @@ autoupdate_version="1"
 
 # This controls validating the LMD executable MD5 hash with known
 # good upstream hash value. This allows LMD to replace the the
-# executable / force a reinstalltion in the event the LMD executable
+# executable / force a reinstallation in the event the LMD executable
 # is tampered with or corrupted. If you intend to make customizations
 # to the LMD executable, you should disable this feature.
 # [0 = disabled, 1 = enabled]
