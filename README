@@ -388,7 +388,7 @@ in single file scans by a wide margin. A single file scan using clamav takes rou
 To enable upload scanning with mod_security2 you must set enable the public_scan option
 in conf.maldet (public_scan=1) then add the following rules to your mod_security2 
 configuration. These rules are best placed in your modsec2.user.conf file on cpanel servers
-or at the top of the appropraite rules file for your setup.
+or at the top of the appropriate rules file for your setup.
 
 /usr/local/apache/conf/modsec2.user.conf (or similar mod_security2 rules file):
 SecRequestBodyAccess On
