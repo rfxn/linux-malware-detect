@@ -32,7 +32,7 @@ v1.6.1 | May 28 2017:
 
 v1.6 | Mar 17 2017:
 [New] added curated set of YARA webshell & malware signatures for use with ClamAV >= 0.99b
-[New] added cleaner rule 'VistorTracker.Mob'
+[New] added cleaner rule 'VisitorTracker.Mob'
 [New] added cleaner rule 'js.inject.fakejquery02'
 [New] added support for 'froxlor' to cron.daily execution
 [New] added support for 'vestacp' to cron.daily execution
