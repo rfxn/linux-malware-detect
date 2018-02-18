@@ -127,7 +127,7 @@ v1.6 | Mar 17 2017:
 [Fix] suppress error output to cli for customer user signature files when they do not exist
 [Fix] uninstall.sh now cleans up signature files from clamav data paths
 [Fix] corrected invalid matching against clamdscan binary when clamd was running as non-root user
-[Fix] intofiywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified to send stdout to logfile
+[Fix] inotifywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified to send stdout to logfile
       for better compatibility
 [Fix] conditionally test for vz container and disable use of ionice which is not support in vz containers
 [Fix] '-k|--kill-monitor' would under certain circumstances leave zombie processes
@@ -458,7 +458,7 @@ v1.3.4 | May 16th 2010:
 [Fix] cleaner function was not properly executing under certain conditions
 [Change] additional error checking/output added to the cleaner function
 [Change] default status output of scans changed for better performance
-[New] added ignore_intofiy for ignoring paths from the monitor service
+[New] added ignore_inotify for ignoring paths from the monitor service
 [Change] updated ignore section of README
 [Fix] backreference errors kicking from scan_stage1 function
 [New] -d|--update-ver option added to update installed version from rfxn.com
