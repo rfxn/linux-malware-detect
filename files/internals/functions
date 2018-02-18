@@ -55,7 +55,7 @@ prerun() {
 		chmod 640 $maldet_log 2> /dev/null
 		cd $tmpdir
 	else
-		echo $ver > $lmd_versionsion_file
+		echo $ver > $lmd_version_file
 	fi
 	
 	if [ ! -d "$sigdir" ]; then
