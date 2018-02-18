@@ -489,7 +489,7 @@ v1.3.3 | May 15th 2010:
 [Change] inotify monitor sets max_user_instances to processors*2
 [Change] inotify monitor sets max_user_watches to inotify_base_watches*users
 [Change] migrated all inotify options from internals.conf to conf.maldet
-[New] added inotify_base_watches to conf.maldet for max file wathces multiplier
+[New] added inotify_base_watches to conf.maldet for max file watches multiplier
 [New] added inotify_nice to conf.maldet for run-time prio of inotifywait
 [New] added inotify_webdir to conf.maldet for html/web root only monitoring
 [Change] extensive format change to README
