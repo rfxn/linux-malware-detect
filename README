@@ -196,7 +196,7 @@ project.
 The configuration of LMD is handled through /usr/local/maldetect/conf.maldet
 and all options are well commented for ease of configuration.
 
-By default LMD has the auto-qurantine of files disabled, this will mean that
+By default LMD has the auto-quarantine of files disabled, this will mean that
 YOU WILL NEED TO ACT on any threats detected or pass the SCANID to the '-q'
 option to batch quarantine the results. To change this please set quar_hits=1
 in conf.maldet.
@@ -206,7 +206,7 @@ in conf.maldet.
 There are four ignore files available and they break down as follows:
 
 /usr/local/maldetect/ignore_paths
-A line spaced file for paths that are to be execluded from search results
+A line spaced file for paths that are to be excluded from search results
  Sample ignore entry:
  /home/user/public_html/cgi-bin
 
@@ -371,7 +371,7 @@ inotify processes.
 The support for HTTP upload scanning is provided through mod_security2's inspectFile hook.
 This feature allows for a validation script to be used in permitting or denying an upload. 
 
-The convenience script to faciliate this is called hookscan.sh and is located in the
+The convenience script to facilitate this is called hookscan.sh and is located in the
 /usr/local/maldetect installation path. The default setup is to run a standard maldet scan
 with no clamav support, no cleaner rule executions and quarantining enabled; these options
 are set in the interest of performance vs accuracy which is a fair tradeoff. 
@@ -388,7 +388,7 @@ in single file scans by a wide margin. A single file scan using clamav takes rou
 To enable upload scanning with mod_security2 you must set enable the public_scan option
 in conf.maldet (public_scan=1) then add the following rules to your mod_security2 
 configuration. These rules are best placed in your modsec2.user.conf file on cpanel servers
-or at the top of the appropraite rules file for your setup.
+or at the top of the appropriate rules file for your setup.
 
 /usr/local/apache/conf/modsec2.user.conf (or similar mod_security2 rules file):
 SecRequestBodyAccess On
@@ -437,7 +437,7 @@ cron will ensure new users have paths created no later than 10 minutes after cre
 
 All non-root scans, such as those performed under mod_security2, will be stored under the
 /usr/local/maldetect/pub/username directory tree. The quarantine paths are relative to the user
-that exectues the scan, so user nobody would be under pub/nobody/quar/. The actual paths
+that executes the scan, so user nobody would be under pub/nobody/quar/. The actual paths
 for where files are quarantined and the user which executed the scan, can be verified in the
 e-mail reports for upload hits.
 
