@@ -32,7 +32,7 @@ v1.6.1 | May 28 2017:
 
 v1.6 | Mar 17 2017:
 [New] added curated set of YARA webshell & malware signatures for use with ClamAV >= 0.99b
-[New] added cleaner rule 'VistorTracker.Mob'
+[New] added cleaner rule 'VisitorTracker.Mob'
 [New] added cleaner rule 'js.inject.fakejquery02'
 [New] added support for 'froxlor' to cron.daily execution
 [New] added support for 'vestacp' to cron.daily execution
@@ -58,7 +58,7 @@ v1.6 | Mar 17 2017:
 [Change] unified all clamav selection logic for data paths, running clamd processes, clam(d)scan CLI options etc...
          into a single function, clamselector(); this will make clam behavior more predictable across all functions
 [Change] added subdomains path for ISPConfig to cron.daily
-[Change] corrected variable naming semantics for import_*_(md5|hex)_url paramters
+[Change] corrected variable naming semantics for import_*_(md5|hex)_url parameters
 [Change] monitor mode now identifies inotifywait processes based on a string pattern unique to maldet
          to avoid conflicts with any other inotifywait processes
 [Change] added wget_proxy variable for us in sysconfig and conf.maldet options
@@ -127,7 +127,7 @@ v1.6 | Mar 17 2017:
 [Fix] suppress error output to cli for customer user signature files when they do not exist
 [Fix] uninstall.sh now cleans up signature files from clamav data paths
 [Fix] corrected invalid matching against clamdscan binary when clamd was running as non-root user
-[Fix] intofiywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified to send stdout to logfile
+[Fix] inotifywait on Ubuntu12 doesn't support the '-o' and '-d' option; modified to send stdout to logfile
       for better compatibility
 [Fix] conditionally test for vz container and disable use of ionice which is not support in vz containers
 [Fix] '-k|--kill-monitor' would under certain circumstances leave zombie processes
@@ -183,7 +183,7 @@ v1.5 | Sep 19 2015:
 [New] added set of defined exit codes for errored exits(1), successful runs with hits(2), successful runs with no hits(0)
 [New] added uninstall.sh script to maldetect installation path
 [New] added md5 hash verification of signature and version update downloads
-[New] added scan_cpunice option to control CPU priorty value of all scan operations such as find, clamscan etc.. (default 19)
+[New] added scan_cpunice option to control CPU priority value of all scan operations such as find, clamscan etc.. (default 19)
 [New] added scan_ionice option to control IO priority value of all scan operations such as find, clamscan etc.. (default 6)
 [New] added autoupdate_signatures/autoupdate_version options to control daily cron based signature/version updates
 [New] added autoupdate_version_hashed option to control validating hash of maldet executable against upstream version
@@ -216,7 +216,7 @@ v1.5 | Sep 19 2015:
 [Change] reordered configuration file, expanded on variable descriptions, overall attempt to simplify/streamline conf.maldet
 [Change] installer symlinks LMD signatures into known/existing ClamAV paths to ensure signatures are loaded into memory by clamd
 [Change] installer issues SIGUSR2 to any running clamd processes to force reload of signature databases
-[Change] cron.daily signature updates issue SIGUSR2 to any running clamd processes to force reload of siganture databases
+[Change] cron.daily signature updates issue SIGUSR2 to any running clamd processes to force reload of signature databases
 [Change] cron.daily signature/version updates sleep random interval 1-999 secs before contacting upstream rfxn.com servers to reduce cdn load
 [Change] modified clamscan database path checks to support cPanel >=11.40 RPM clamAV connector RPM's
 [Change] modified location of statistical data files from tmpdir to sessdir making tmpdir a stateless path that can be purged at anytime
@@ -368,7 +368,7 @@ v1.4.0 | Apr 17th 2011:
 [Change] wget calls now use the --referer option to broadcast local LMD version
 [Fix] replaced stray references of absolute install path with the install path variable
 [New] stage2 (HEX) scanner now supports use of named pipe (FIFO) for passing file hex contents,
-      enabled by default, provides better performance with larger depth anlaysis of files
+      enabled by default, provides better performance with larger depth analysis of files
 [New] added hex_fifo_scan & hex_fifo_depth variables to conf.maldet for fifo hex scanning
 [Change] -c|--checkout now supports directory paths
 [Change] -r|--scan-recent and -a|--scan-all now supports single file scans
@@ -458,7 +458,7 @@ v1.3.4 | May 16th 2010:
 [Fix] cleaner function was not properly executing under certain conditions
 [Change] additional error checking/output added to the cleaner function
 [Change] default status output of scans changed for better performance
-[New] added ignore_intofiy for ignoring paths from the monitor service
+[New] added ignore_inotify for ignoring paths from the monitor service
 [Change] updated ignore section of README
 [Fix] backreference errors kicking from scan_stage1 function
 [New] -d|--update-ver option added to update installed version from rfxn.com
@@ -483,13 +483,13 @@ v1.3.3 | May 15th 2010:
 [New] added quar_susp_minuid option for suspend user minimum user id
 [Fix] inotify monitor now properly acts on MODIFY,MOVE_TO,MOVE_FROM states
 [Change] inotify monitor now can take a list of paths or file for path input
-[Change] inotify monitor now has no default use, must specifiy USER|FILE|PATHS
+[Change] inotify monitor now has no default use, must specify USER|FILE|PATHS
 [Change] revised short and long usage output for new options/usage changes
 [Change] inotify monitor now spawns only one process for all monitored paths
 [Change] inotify monitor sets max_user_instances to processors*2
 [Change] inotify monitor sets max_user_watches to inotify_base_watches*users
 [Change] migrated all inotify options from internals.conf to conf.maldet
-[New] added inotify_base_watches to conf.maldet for max file wathces multiplier
+[New] added inotify_base_watches to conf.maldet for max file watches multiplier
 [New] added inotify_nice to conf.maldet for run-time prio of inotifywait
 [New] added inotify_webdir to conf.maldet for html/web root only monitoring
 [Change] extensive format change to README
