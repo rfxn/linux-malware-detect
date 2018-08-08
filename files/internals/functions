@@ -1428,8 +1428,11 @@ monitor_cycle() {
 		fi
 		log_size=`$wc -l $inotify_log | awk '{print$1}'`
 		if [ "$log_size" -ge "$inotify_trim" ]; then
-			trim=1000
-			printf "%s\n" "$trim,${log_size}d" w | ed -s $inotify_log 2> /dev/null
+			trim=$(($log_size - 1000))
+			log_chars=`printf "%s\n" "1,${trim}p" | ed -s $inotify_log 2> /dev/null | wc -c`
+			tlog_new=$(( `cat $inspath/tmp/inotify` - $log_chars ))
+			echo $tlog_new > $inspath/tmp/inotify
+			printf "%s\n" "1,${trim}d" w | ed -s $inotify_log 2> /dev/null
 			eout "{mon} inotify log file trimmed"
 		fi
 		if [ "$inotify_cycle_runtime" -ge "$inotify_reloadtime" ] || [ -f "$inspath/reload_monitor" ]; then
