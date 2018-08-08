@@ -1926,6 +1926,7 @@ lmdup() {
 		fi
 		if [ -s "$tmpwd/${lmd_current_tgzfile}" ]; then
 			tar xfz ${lmd_current_tgzfile}
+			rm -f ${lmd_current_tgzfile} ${lmd_current_tgzfile}.md5
 			cd maldetect-${upstreamver_readable}
 			chmod 750 install.sh
 			sh -c './install.sh' >> /dev/null 2>&1
