@@ -543,18 +543,18 @@ clean() {
 }
 
 quar_get_filestat() {
-	file="$1"
-	if [ -f "$file" ]; then
+	fstat="$1"
+	if [ -f "$fstat" ]; then
 		# owner:group:mode:size(b):md5:atime(epoch):mtime(epoch):ctime(epoch):file(path)
-                file_owner=`grep -E -v '\#' "$file" | awk -F':' '{print$1}'`
-                file_group=`grep -E -v '\#' "$file" | awk -F':' '{print$2}'`
-                file_mode=`grep -E -v '\#' "$file"  | awk -F':' '{print$3}'`
-                file_size=`grep -E -v '\#' "$file"  | awk -F':' '{print$4}'`
-                md5_hash=`grep -E -v '\#' "$file"   | awk -F':' '{print$5}'`
-		file_atime=`grep -E -v '\#' "$file"   | awk -F':' '{print$6}'`
-		file_mtime=`grep -E -v '\#' "$file"   | awk -F':' '{print$7}'`
-		file_ctime=`grep -E -v '\#' "$file"   | awk -F':' '{print$8}'`
-                file_path=`grep -E -v '\#' "$file"  | cut -d':' -f9`
+                file_owner=`grep -E -v '\#' "$fstat" | awk -F':' '{print$1}'`
+                file_group=`grep -E -v '\#' "$fstat" | awk -F':' '{print$2}'`
+                file_mode=`grep -E -v '\#' "$fstat"  | awk -F':' '{print$3}'`
+                file_size=`grep -E -v '\#' "$fstat"  | awk -F':' '{print$4}'`
+                md5_hash=`grep -E -v '\#' "$fstat"   | awk -F':' '{print$5}'`
+		file_atime=`grep -E -v '\#' "$fstat"   | awk -F':' '{print$6}'`
+		file_mtime=`grep -E -v '\#' "$fstat"   | awk -F':' '{print$7}'`
+		file_ctime=`grep -E -v '\#' "$fstat"   | awk -F':' '{print$8}'`
+                file_path=`grep -E -v '\#' "$fstat"  | cut -d':' -f9`
 	fi
 }
 
