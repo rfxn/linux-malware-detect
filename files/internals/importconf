@@ -205,9 +205,17 @@ quarantine_suspend_user_minuid="$quarantine_suspend_user_minuid"
 # [ MONITORING OPTIONS ]
 ##
 # The default startup option for monitor mode, either 'users' or path to line
-# spaced file containing local paths to monitor. This option is used for the
-# init based startup script. This value is ignored when '/etc/sysconfig/maldet'
-# or '/etc/default/maldet' is present with a defined value for $MONITOR_MODE.
+# spaced file containing local paths to monitor.
+#
+# This option is optional for the init based startup script, maldet.sh. This
+# value is ignored when '/etc/sysconfig/maldet' or '/etc/default/maldet' is
+# present with a defined value for $MONITOR_MODE.
+#
+# This option is REQUIRED for the systemd maldet.service script. That script
+# only checks for the value of $default_monitor_mode. The service will fail to
+# start if a value is not provided.
+# default_monitor_mode="users"
+# default_monitor_mode="/usr/local/maldetect/monitor_paths"
 default_monitor_mode="$default_monitor_mode"
 
 # The base number of files that can be watched under a path
