@@ -847,6 +847,7 @@ clamselector() {
                 scan_max_filesize="${scan_max_filesize}c"
         else
                 scan_max_filesize="2048k"
+                clamscan_max_filesize="2592000"
         fi
 
         if [ "$scan_clamscan" == "1" ]; then
