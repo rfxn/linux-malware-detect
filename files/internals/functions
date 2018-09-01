@@ -631,7 +631,7 @@ view_report() {
 			FILES=`cat $file | grep "TOTAL FILES" | sed 's/TOTAL //'`
 			HITS=`cat $file | grep "TOTAL HITS" | sed 's/TOTAL //'`
 			CLEAN=`cat $file | grep "TOTAL CLEANED" | sed 's/TOTAL //'`
-			TIME=`cat $file | grep -iE "TIME|STARTED" | sed -e 's/TIME: //' -e 's/STARTED: //' | awk '{print$1,$2,$3,$4}'`
+			TIME=`cat $file | grep -E "^TIME|^STARTED" | sed -e 's/TIME: //' -e 's/STARTED: //' | awk '{print$1,$2,$3,$4}'`
 			TIME_U=`date -d "$TIME" "+%s" 2> /dev/null`
                         ETIME=`cat $file | grep "ELAPSED" | awk '{print$1,$2}' | sed 's/ELAPSED/RUNTIME/'`
 			if [ ! -z "$SCANID" ] && [ ! -z "$TIME" ]; then
