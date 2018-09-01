@@ -1865,6 +1865,12 @@ lmdup() {
 	tmpwd="$tmpdir/.lmdup.$RANDOM.$$"
 	upstreamver="$tmpwd/.lmdup_vercheck.$$"
 	mkdir -p $tmpwd ; chmod 700 $tmpwd
+
+	if [ "$lmdup_beta" ]; then
+		lmd_hash_url="${lmd_hash_url}.beta"
+		lmd_version_url="${lmd_version_url}.beta"
+		lmd_current_tgzfile="maldetect-beta.tar.gz"
+	fi
 	
 	eout "{update} checking for available updates..." 1
         get_remote_file "$lmd_version_url" "update" "1"

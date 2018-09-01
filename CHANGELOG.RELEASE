@@ -18,6 +18,7 @@ v1.6.3 | Sep 01 2018:
 [Change] cleanup .tgz/.md5 files on version updates mid-flight to prevent potential 'cd: too many arguments' errors
 [Change] trim inotify log from beginning instead of end of file; pr #292
 [Change] user mode scanning no longer scans system temporary paths; issue #283
+[Change] added '--beta' flag to '-d|--update-ver' to support pulling down beta release of LMD
 [Change] stage v1.6.3 release; update version and date stamps
 [Kudos] Thank you to those that contributed pull requests and issues during this release cycle. PR contributions from:
         sporks5000

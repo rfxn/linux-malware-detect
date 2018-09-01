@@ -265,7 +265,9 @@ else
 				fi
 				if [ "$1" == "--force" ]; then
 					lmdup_force=1
-                                fi
+                                elif [ "$1" == "--beta" ]; then
+					lmdup_beta=1
+				fi
                                 lmdup
                         ;;
                         -u|--update|--update-sigs)
