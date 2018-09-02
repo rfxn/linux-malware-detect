@@ -60,6 +60,33 @@ fi
 # prerun operations
 prerun
 
+check_operation() {
+	if [[ "$operation" == "$1" ]]; then
+		echo "You cannot use the flag \"$operation\" twice"
+		postrun
+	elif [[ -n "$operation" ]]; then
+		echo "You cannot use the flags \"$operation\" and \"$1\" simultaneously"
+		postrun
+	fi
+	operation="$1"
+}
+
+assign_args() {
+	firstarg=
+	secondarg=
+	if [[ "$1" == "--help" || "$2" == "--help" || "$1" == "-h" || "$2" == "-h" ]]; then
+		header
+		usage_long | more
+		postrun
+	fi
+	if [[ -n "$1" ]]; then
+		firstarg="$1"
+	fi
+	if [[ -n "$2" ]]; then
+		secondarg="$2"
+	fi
+}
+
 if [ -z "$1" ]; then
 	header
 	usage_short
@@ -128,11 +155,6 @@ else
 			-b|--background)
 				set_background=1
 			;;
-			-c|--checkout)
-				shift
-				header
-				checkout "$1"
-			;;
 			-x|--exclude-regex)
 				shift
 				if [ "$1" ]; then
@@ -151,164 +173,175 @@ else
 					web_proxy="$1"
 				fi
 			;;
-			--alert-daily|--monitor-report)
-				genalert digest
+			--alert-daily|--monitor-report|-k|--kill-monitor|-kill|-l|--log|-p|--purge)
+				check_operation "$1"
 			;;
-			-m|--monitor)
-				header
+			-m|--monitor|-c|--checkout|-f|--file-list|-a|--scan-all|-s|--restore|-q|--quarantine|-n|--clean)
+				check_operation "$1"
 				shift
-				if [ "$OSTYPE" == "FreeBSD" ]; then
-					eout "{mon} not currently supported under FreeBSD" 1
-				elif [ "$1" == "reload" ] || [ "$1" == "RELOAD" ]; then
-					eout "{mon} queued monitor for configuration reload" 1
-					touch $inspath/reload_monitor
-				else
-					svc=m
-					trap trap_exit 2
-					monitor_init "$1"
-				fi
+				assign_args "$1"
 			;;
-			-k|--kill-monitor|-kill)
-				header
-				if [ "$OSTYPE" == "FreeBSD" ]; then
-					eout "{mon} not currently supported under FreeBSD" 1
-				else
-					monitorpid=`pgrep -f inotify.paths.[0-9]+`
-					if [ -z "$monitorpid" ]; then
-						eout "{mon} could not find running inotifywait process, are we already dead?" 1
-					else
-						eout "{mon} sent kill to monitor service (pid: $monitorpid)" 1
-						monitor_kill
-					fi
-				fi
-			;;
-			-f|--file-list)
+			-r|--scan-recent|-e|--report)
+				check_operation "$1"
 				shift
-				if [ -z "$hscan" ]; then
-					header
-				fi
-				svc=f
-				trap trap_exit 2
-				file_list="$1"
-				if [ ! -f "$file_list" ]; then
-					eout "{scan} file does not exist ($1)" 1
-					exit 1
-					elif [ ! -s "$file_list" ]; then
-					eout "{scan} file list is empty ($1)" 1
-					exit 1
-				fi
-				if [ "$set_background" == "1" ]; then
-					eout "{scan} launching scan of $spath to background, see $maldet_log for progress" 1
-					scan "$spath" "$file_list" >> /dev/null 2>&1 &
-				else
-					scan "$spath" "$file_list"
+				assign_args "$1" "$2"
+				shift
+			;;
+			-d|--update-ver|--update-version)
+				check_operation "$1"
+				if [[ "$2" == "1" || "$2" == "--force" || "$2" == "--beta" ]]; then
+					shift
+					assign_args "$1"
 				fi
 			;;
-			-a|--scan-all)
-				shift
-				if [ -z "$hscan" ]; then
-					header
+			-u|--update|--update-sigs)
+				process_update=1
+				if [[ "$2" == "1" || "$2" == "--force" ]]; then
+					shift
+					updatearg="$2"
 				fi
-				svc=a
-				trap trap_exit 2
-				spath="$1"
-				hrspath="$1"
-				if [ "$spath" == "" ]; then
-					spath=/home
-				fi
-				if [ "$set_background" == "1" ]; then
-					eout "{scan} launching scan of $spath to background, see $maldet_log for progress" 1
-					scan "$spath" all >> /dev/null 2>&1 &
-				else
-					scan "$spath" all
-				fi
-			;;
-			-r|--scan-recent)
-				header
-				svc=r
-				trap trap_exit 2
-				shift
-				spath="$1"
-				shift
-				days="$1"
-				if [ -z "$spath" ]; then
-					eout "{scan} no path defined" 1
-					exit
-				fi
-				if [ -z "$days" ]; then
-					days=7
-				fi
-				if [ "$set_background" == "1" ]; then
-					eout "{scan} launching scan of $spath changes in last ${days}d to background, see $maldet_log for progress" 1
-					scan "$spath" "$days" >> /dev/null 2>&1 &
-				else
-					scan "$spath" "$days"
-				fi
-			;;
-			-l|--log)
-				header
-				view
-			;;
-			-e|--report)
-				header
-				shift
-				view_report "$1" "$2"
-			;;
-			-p|--purge)
-				header
-				purge
-			;;
-                        -d|--update-ver|--update-version)
-				shift
-                                if [ ! "$1" == "1" ]; then
-                                        header
-				fi
-				if [ "$1" == "--force" ]; then
-					lmdup_force=1
-                                elif [ "$1" == "--beta" ]; then
-					lmdup_beta=1
-				fi
-                                lmdup
-                        ;;
-                        -u|--update|--update-sigs)
-                                shift
-                                if [ ! "$1" == "1" ]; then
-                                        header
-				fi
-				if [ "$1" == "--force" ]; then
-					sigup_force=1
-                                fi
-                                sigup
-                        ;;
-			-s|--restore)
-				header
-				shift
-				if [ -f "$sessdir/session.hits.$1" ]; then
-					restore_hitlist "$1"
-				else
-					restore "$1"
-				fi
-			;;
-			-q|--quarantine)
-				header
-				shift
-				quar_hitlist "$1"
-			;;
-			-n|--clean)
-				header
-				shift
-				clean_hitlist "$1"
 			;;
 			-h|--help)
 				header
 				usage_long | more
+				postrun
 			;;
 			*)
-				header
-				usage_short
+				unknown_arg=1
 		esac
 		shift
 	done
+
+	# Update if requested
+	if [[ -n "$process_update" && -z "$unknown_arg" ]]; then
+		shift
+		if [ ! "$updatearg" == "1" ]; then
+			already_header=1
+			header
+		fi
+		if [ "$updatearg" == "--force" ]; then
+			sigup_force=1
+		fi
+		sigup
+	fi
+
+	# Perform the operation requested
+	if [[ "$operation" == "--alert-daily" || "$operation" == "--monitor-report" ]]; then
+		genalert digest
+	elif [[ "$operation" == "-f" || "$operation" == "--file-list" ]]; then
+		if [[ -z "$hscan" && -z "$already_header" ]]; then
+			header
+		fi
+		svc=f
+		trap trap_exit 2
+		file_list="$firstarg"
+		if [ ! -f "$file_list" ]; then
+			eout "{scan} file does not exist ($firstarg)" 1
+			exit 1
+		elif [ ! -s "$file_list" ]; then
+			eout "{scan} file list is empty ($firstarg)" 1
+			exit 1
+		fi
+		if [ "$set_background" == "1" ]; then
+			eout "{scan} launching scan of $spath to background, see $maldet_log for progress" 1
+			scan "$spath" "$file_list" >> /dev/null 2>&1 &
+		else
+			scan "$spath" "$file_list"
+		fi
+	elif [[ "$operation" == "-a" || "$operation" == "--scan-all" ]]; then
+		if [[ -z "$hscan" && -z "$already_header" ]]; then
+			header
+		fi
+		svc=a
+		trap trap_exit 2
+		spath="$firstarg"
+		hrspath="$firstarg"
+		if [ "$spath" == "" ]; then
+			spath=/home
+		fi
+		if [ "$set_background" == "1" ]; then
+			eout "{scan} launching scan of $spath to background, see $maldet_log for progress" 1
+			scan "$spath" all >> /dev/null 2>&1 &
+		else
+			scan "$spath" all
+		fi
+	elif [[ "$operation" == "-d" || "$operation" == "--update-ver" || "$operation" == "--update-version" ]]; then
+		if [[ "$firstarg" != "1" && -z "$already_header" ]]; then
+			header
+		fi
+		if [ "$firstarg" == "--force" ]; then
+			lmdup_force=1
+		elif [ "$firstarg" == "--beta" ]; then
+			lmdup_beta=1
+		fi
+		lmdup
+	else
+		if [[ -z "$already_header" ]]; then
+			header
+		fi
+		if [[ -n "$unknown_arg" || ( -z "$operation" && -n "$process_update" ) ]]; then
+			usage_short
+		elif [[ "$operation" == "-c" || "$operation" == "--checkout" ]]; then
+			checkout "$firstarg"
+		elif [[ "$operation" == "-m" || "$operation" == "--monitor" ]]; then
+			if [ "$OSTYPE" == "FreeBSD" ]; then
+				eout "{mon} not currently supported under FreeBSD" 1
+			elif [ "$firstarg" == "reload" ] || [ "$firstarg" == "RELOAD" ]; then
+				eout "{mon} queued monitor for configuration reload" 1
+				touch $inspath/reload_monitor
+			else
+				svc=m
+				trap trap_exit 2
+				monitor_init "$firstarg"
+			fi
+		elif [[ "$operation" == "-k" || "$operation" == "--kill-monitor" || "$operation" == "-kill" ]]; then
+			if [ "$OSTYPE" == "FreeBSD" ]; then
+				eout "{mon} not currently supported under FreeBSD" 1
+			else
+				monitorpid=`pgrep -f inotify.paths.[0-9]+`
+				if [ -z "$monitorpid" ]; then
+					eout "{mon} could not find running inotifywait process, are we already dead?" 1
+				else
+					eout "{mon} sent kill to monitor service (pid: $monitorpid)" 1
+					monitor_kill
+				fi
+			fi
+		elif [[ "$operation" == "-r" || "$operation" == "--scan-recent" ]]; then
+			svc=r
+			trap trap_exit 2
+			spath="$firstarg"
+			days="$secondarg"
+			if [ -z "$spath" ]; then
+				eout "{scan} no path defined" 1
+				exit
+			fi
+			if [ -z "$days" ]; then
+				days=7
+			fi
+			if [ "$set_background" == "1" ]; then
+				eout "{scan} launching scan of $spath changes in last ${days}d to background, see $maldet_log for progress" 1
+				scan "$spath" "$days" >> /dev/null 2>&1 &
+			else
+				scan "$spath" "$days"
+			fi
+		elif [[ "$operation" == "-l" || "$operation" == "--log" ]]; then
+			view
+		elif [[ "$operation" == "-e" || "$operation" == "--report" ]]; then
+			view_report "$firstarg" "$secondarg"
+		elif [[ "$operation" == "-p" || "$operation" == "--purge" ]]; then
+			purge
+		elif [[ "$operation" == "-s" || "$operation" == "--restore" ]]; then
+			if [ -f "$sessdir/session.hits.$firstarg" ]; then
+				restore_hitlist "$firstarg"
+			else
+				restore "$firstarg"
+			fi
+		elif [[ "$operation" == "-q" || "$operation" == "--quarantine" ]]; then
+			quar_hitlist "$firstarg"
+		elif [[ "$operation" == "-n" || "$operation" == "--clean" ]]; then
+			clean_hitlist "$firstarg"
+		fi
+	fi
 fi
 
 # import any remote configuration data
