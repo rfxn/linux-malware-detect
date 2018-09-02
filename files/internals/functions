@@ -919,6 +919,10 @@ scan() {
 	scanid="$datestamp.$$"
 	if [ "$file_list" ]; then
 		spath="\"$file_list\""
+	elif [ ! -f "$find" ]; then
+		eout "{scan} could not locate find command" 1
+		clean_exit
+		exit 1
 	fi
 	if [ -f "$spath" ] && [ -z "$file_list" ]; then
 		single_filescan=1
@@ -931,11 +935,6 @@ scan() {
 	fi
 	if [ ! -f "$sig_hex_file" ]; then
 		eout "{scan} required signature file not found ($sig_hex_file), try running -u|--update, aborting!" 1
-		clean_exit
-		exit 1
-	fi
-	if [ ! -f "$find" ]; then
-		eout "{scan} could not locate find command" 1
 		clean_exit
 		exit 1
 	fi
