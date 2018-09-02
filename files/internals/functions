@@ -169,6 +169,10 @@ prerun() {
 			nice_command="$cpulimit -l $scan_cpulimit $nice_command"
 		fi
 	fi
+
+	if [ -z "$cron_daily_scan" ]; then
+		cron_daily_scan=1
+	fi
 }
 
 eout() {

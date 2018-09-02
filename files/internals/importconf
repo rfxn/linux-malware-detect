@@ -55,6 +55,11 @@ autoupdate_version_hashed="1"
 # with the daily cron execution.
 cron_prune_days="$cron_prune_days"
 
+# This controls whether or not daily automatic scanning of standard web
+# directories is performed via cron.
+# [0 = disabled, 1 = enabled]
+cron_daily_scan="1"
+
 # When defined, the import_config_url option allows a configuration file to be
 # downloaded from a remote URL. The local conf.maldet and internals.conf are
 # parsed followed by the imported configuration file. As such, only variables

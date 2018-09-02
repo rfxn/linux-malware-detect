@@ -66,7 +66,7 @@ fi
 # if we're running inotify monitoring, send daily hit summary
 if [ "$(ps -A --user root -o "cmd" | grep -E maldetect | grep -E inotifywait)" ]; then
         $inspath/maldet --monitor-report >> /dev/null 2>&1
-elif [ $perform_daily_scan == "1" ]
+elif [ $cron_daily_scan == "1" ]
 	if [ -d "/home/virtual" ] && [ -d "/usr/lib/opcenter" ]; then
 		# ensim
 	        $inspath/maldet -b -r /home/virtual/?/fst/var/www/html/,/home/virtual/?/fst/home/?/public_html/ $scan_days >> /dev/null 2>&1

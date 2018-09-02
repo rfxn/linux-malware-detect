@@ -56,7 +56,7 @@ cron_prune_days="21"
 # This controls whether or not daily automatic scanning of standard web
 # directories is performed via cron.
 # [0 = disabled, 1 = enabled]
-perform_daily_scan="1"
+cron_daily_scan="1"
 
 # When defined, the import_config_url option allows a configuration file to be
 # downloaded from a remote URL. The local conf.maldet and internals.conf are
