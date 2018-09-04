@@ -114,7 +114,7 @@ else
 				tmpco=$tmpdir/config.cli
 				rm -f $tmpco
 				touch $tmpco
-				echo $1 | sed -e 's/--config-option //' -e 's/-co //' | tr -d ' ' | tr ',' '\n' > $tmpco
+				echo ,$1 | sed -e 's/-\(-config-option\|co\) //' -e 's/\(, *[a-z_]*=\)/\n\1\n/g' | sed -e '1d' -e 's/^\([^,].*\|.*[^=]\)$/"\1"/' | sed -e '$!N;s/\n//' -e 's/^, *//' > $tmpco
 				. $tmpco
 				rm -f $tmpco
 			;;
