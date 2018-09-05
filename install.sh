@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 ##
-# Linux Malware Detect v1.6.3
+# Linux Malware Detect v1.6.4
 #             (C) 2002-2018, R-fx Networks <proj@r-fx.org>
 #             (C) 2018, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2

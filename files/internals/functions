@@ -1,5 +1,5 @@
 ##
-# Linux Malware Detect v1.6.3
+# Linux Malware Detect v1.6.4
 #             (C) 2002-2018, R-fx Networks <proj@r-fx.org>
 #             (C) 2018, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
@@ -1622,7 +1622,7 @@ monitor_init() {
 	touch $inotify_log
 	chmod 640 $inotify_log
 	
-	if [ "$(echo $inopt | grep -E "users|user|USERS|USER")" ]; then
+	if [ "$(echo $inopt | grep -iE 'user(s?)')" ]; then
 		for i in `cat /etc/passwd | cut -d':' -f1,3,6 | sort`; do
 			user=`echo $i | cut -d':' -f1`
 			user_id=`echo $i | cut -d':' -f2`
@@ -1688,16 +1688,15 @@ monitor_init() {
 		exit
 	fi
 	
-	if [ -f "$ignore_inotify" ]; then
-		cnt=`$wc -l $ignore_inotify | awk '{print$1}'`
-		if [ "$cnt" > "0" ]; then
-			for igfile in `cat $ignore_inotify`; do
-				if [ "$igregexp" ]; then
-					igregexp="$igregexp|$igfile"
-				else
-					igregexp="($igfile"
-				fi
-			done
+	if [ -f "$ignore_inotify" ] && [ ! -s "$ignore_inotify" ]; then
+		for igfile in `cat $ignore_inotify | grep -vE '^$'`; do
+			if [ "$igregexp" ]; then
+				igregexp="$igregexp|$igfile"
+			else
+				igregexp="($igfile"
+			fi
+		done
+		if [ "$igregexp" ]; then
 			igregexp="$igregexp)"
 			exclude="--exclude $igregexp"
 		fi
