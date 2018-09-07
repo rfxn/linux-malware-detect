@@ -141,9 +141,12 @@ else
 				tmpco=$tmpdir/config.cli
 				rm -f $tmpco
 				touch $tmpco
-				echo ,$1 | sed -e 's/-\(-config-option\|co\) //' -e 's/\(, *[a-z_]*=\)/\n\1\n/g' | sed -e '1d' -e 's/^\([^,].*\|.*[^=]\)$/"\1"/' | sed -e '$!N;s/\n//' -e 's/^, *//' > $tmpco
+				echo ,$1 | sed -e 's/-\(-config-option\|co\) //' -e 's/\(, *[a-zA-Z0-9_][a-zA-Z0-9_]*=\)/\n\1\n/g' | sed -e '1d' -e 's/^\([^,].*\|.*[^=]\)$/"\1"/' | sed -e '$!N;s/\n//' -e 's/^, *//' | grep -v "^ *compatcnf" > $tmpco
 				. $tmpco
 				rm -f $tmpco
+				if [ -f "$compatcnf" ]; then
+					source $compatcnf
+				fi
 			;;
 			-qd)
 				shift
