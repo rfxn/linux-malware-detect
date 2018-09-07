@@ -82,7 +82,7 @@ elif [ $cron_daily_scan == "1" ]
 	elif [ -d "/etc/webmin/virtual-server" ]; then
 		# Virtualmin
                 $inspath/maldet -b -r /home/?/public_html/,/home/?/domains/?/public_html/ $scan_days >> /dev/null 2>&1
-	elif [ -d "/usr/local/ispmgr" ]; then
+	elif [ -d "/usr/local/ispmgr" ] || [ -d "/usr/local/mgr5" ]; then
 		# ISPmanager
 		$inspath/maldet -b -r /var/www/?/data/,/home/?/data/ $scan_days >> /dev/null 2>&1
 	elif [ -d "/var/customers/webs" ]; then
