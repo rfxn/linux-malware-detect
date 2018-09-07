@@ -113,14 +113,14 @@ prerun() {
         email_alert=1
     fi
 	
-	if [ ! -f "$sig_cust_hex_file" ]; then
-		touch $sig_cust_hex_file
-		chmod 644 $sig_cust_hex_file
+	if [ ! -f "$sig_user_hex_file" ]; then
+		touch $sig_user_hex_file
+		chmod 644 $sig_user_hex_file
 	fi
 	
-	if [ ! -f "$sig_cust_md5_file" ]; then
-		touch $sig_cust_md5_file
-		chmod 644 $sig_cust_md5_file
+	if [ ! -f "$sig_user_md5_file" ]; then
+		touch $sig_user_md5_file
+		chmod 644 $sig_user_md5_file
 	fi
 	
 	if [ "$scan_hexfifo" == "1" ]; then
@@ -313,14 +313,14 @@ import_user_sigs() {
 	if [ "$import_custsigs_md5_url" ]; then
 		get_remote_file "$import_custsigs_md5_url" "importsigs" "1"
 		if [ -f "$return_file" ]; then
-			cp -f $return_file $sig_cust_md5_file
+			cp -f $return_file $sig_user_md5_file
 			eout "{importsigs} imported custom signature data from $import_custsigs_md5_url"
 		fi
 	fi
 	if [ "$import_custsigs_hex_url" ]; then
 		get_remote_file "$import_custsigs_hex_url" "importsigs" "1"
 		if [ -f "$return_file" ]; then
-			cp -f $return_file $sig_cust_hex_file
+			cp -f $return_file $sig_user_hex_file
 			eout "{importsigs} imported custom signature data from $import_custsigs_hex_url"
 		fi
 	fi
@@ -949,10 +949,10 @@ scan() {
 	if [ ! "$days" == "all" ] && [ -z "$file_list" ]; then
 		val=`echo $days | grep "[[:alpha:]]"`
 		if [ ! -z "$val" ]; then
-			eout "{scan} days value must be numeric value in the range of 1 - 60, reverting to default (7)." 1
+			eout "{scan} days value must be numeric value in the range of 1 - 90, reverting to default (7)." 1
 			days=7
-		elif [ "$days" -gt "60" ]; then
-			eout "{scan} days value must be numeric value in the range of 1 - 60, reverting to default (7)." 1
+		elif [ "$days" -gt "90" ]; then
+			eout "{scan} days value must be numeric value in the range of 1 - 90, reverting to default (7)." 1
 			days=7
 		fi
 	fi
@@ -976,12 +976,12 @@ scan() {
 	hex_sigs=`$wc -l $sig_hex_file | awk '{print$1}'`
 	md5_sigs=`$wc -l $sig_md5_file | awk '{print$1}'`
 	yara_sigs=`grep -E -c ^rule $sig_yara_file | awk '{print$1}'`
-	custhex_sigs=`$wc -l $sig_cust_hex_file | awk '{print$1}'`
-	custmd5_sigs=`$wc -l $sig_cust_md5_file | awk '{print$1}'`
-	cust_sigs=$[custhex_sigs+custmd5_sigs]
-	tot_sigs=$[md5_sigs+hex_sigs+custhex_sigs+custmd5_sigs+yara_sigs]
+	user_hex_sigs=`$wc -l $sig_user_hex_file | awk '{print$1}'`
+	user_md5_sigs=`$wc -l $sig_user_md5_file | awk '{print$1}'`
+	user_sigs=$[user_hex_sigs+user_md5_sigs]
+	tot_sigs=$[md5_sigs+hex_sigs+user_hex_sigs+user_md5_sigs+yara_sigs]
 	if [ -z "$hscan" ]; then
-		eout "{scan} signatures loaded: $tot_sigs ($md5_sigs MD5 | $hex_sigs HEX | $yara_sigs YARA | $cust_sigs USER)" 1
+		eout "{scan} signatures loaded: $tot_sigs ($md5_sigs MD5 | $hex_sigs HEX | $yara_sigs YARA | $user_sigs USER)" 1
 	fi
 	if [ -f "$ignore_file_ext" ]; then
 		if [ ! "$(cat $ignore_file_ext)" == "" ]; then
@@ -1118,18 +1118,29 @@ scan() {
 		if [ -z "$hscan" ]; then
 			eout "{scan} scan of $hrspath ($tot_files files) in progress..." 1
 		fi
+
 		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan start"  >> $clamscan_log
-
-
 		clamscan_results="$tmpdir/.clamscan.$$"
 		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) executed: $nice_command $clamscan $clamopts --infected --no-summary -f $find_results" >> $clamscan_log
-		$nice_command $clamscan $clamopts --infected --no-summary -f $find_results > $clamscan_results 2>> $clamscan_log || clamscan_return=$?
+		$nice_command $clamscan $clamopts --infected --no-summary -f $find_results > $clamscan_results 2>> $clamscan_log
+		clamscan_return=$?
 		if [ "$clamscan_return" == "2" ]; then
-			eout "{scan} clamscan returned an error, check $clamscan_log for more details!" 1
-			echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan end"  >> $clamscan_log
+			if [ "$quarantine_on_error" == "0" ] || [ -z "$quarantine_on_error" ]; then
+				quarantine_hits=0
+				eout "{scan} clamscan returned an error, check $clamscan_log for details; quarantine has been disabled!" 1
+			else
+				eout "{scan} clamscan returned an error, check $clamscan_log for details!" 1
+			fi
 		fi
+		clamscan_fatal_error=`grep -m1 'no reply from clamd' $clamscan_results`
+		if [ "$clamscan_fatal_error" ]; then
+			quarantine_hits=0
+                        eout "{scan} clamscan returned a fatal error in scan results, check $clamscan_log for details; quarantine has been disabled!" 1
+		fi
+		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan end return $clamscan_return"  >> $clamscan_log
+
 		lbreakifs set
-		for hit in `grep -E -v 'ERROR$|lstat()' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
+		for hit in `grep -E -v 'ERROR$|lstat()|no reply from clamd' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
 			file=`echo "$hit" | cut -d':' -f2`
 			signame=`echo "$hit" | cut -d':' -f1`
 			if [ ! -z "$(echo $signame | grep -E 'YARA')" ]; then
@@ -1251,7 +1262,7 @@ scan_stage1() {
 	clchk="$2"
 	hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 	if  [ ! -z "$hash" ]; then
-		val_hash=`grep -m1 $hash $sig_cust_md5_file $sig_md5_file`
+		val_hash=`grep -m1 $hash $sig_user_md5_file $sig_md5_file`
 		if [ ! -z "$val_hash" ]; then
 			md5_hit="$hash"
 			md5_hitname=`echo $val_hash | cut -d':' -f4`
@@ -1815,8 +1826,8 @@ gensigs() {
 	rm -f $runtime_ndb $runtime_hdb $runtime_hexstrings 2> /dev/null
 	ln -fs $runtime_ndb $sigdir/lmd.user.ndb 2> /dev/null
 	ln -fs $runtime_hdb $sigdir/lmd.user.hdb 2> /dev/null
-	if [ -s "$sig_cust_hex_file" ]; then
-		cat "$sig_hex_file" "$sig_cust_hex_file" | grep -vE '^\s*$' > $runtime_hexstrings
+	if [ -s "$sig_user_hex_file" ]; then
+		cat "$sig_hex_file" "$sig_user_hex_file" | grep -vE '^\s*$' > $runtime_hexstrings
 	else
 		cat "$sig_hex_file" > $runtime_hexstrings
 	fi
@@ -1825,8 +1836,8 @@ gensigs() {
         done
 	
 	if [ "$scan_clamscan" == "1" ]; then
-		if [ -s "$sig_cust_hex_file" ]; then
-			for i in `cat $sig_cust_hex_file | sed 's/{HEX}//' | tr ':' '%' | grep -vE "^\s*$"`; do
+		if [ -s "$sig_user_hex_file" ]; then
+			for i in `cat $sig_user_hex_file | sed 's/{HEX}//' | tr ':' '%' | grep -vE "^\s*$"`; do
 				name=`echo $i | tr '%' ' ' | awk '{print$2}'`
 				hex=`echo $i | tr '%' ' ' | awk '{print$1}'`
 				if [ ! -z "$name" ] && [ ! -z "$hex" ]; then
@@ -1837,8 +1848,8 @@ gensigs() {
 		else
 			cp $sig_cav_hex_file $runtime_ndb
 		fi
-		if [ -s "$sig_cust_md5_file" ]; then
-			cat "$sig_cust_md5_file" "$sig_md5_file" | grep -vE "^\s*$" | sort -u > $runtime_hdb
+		if [ -s "$sig_user_md5_file" ]; then
+			cat "$sig_user_md5_file" "$sig_md5_file" | grep -vE "^\s*$" | sort -u > $runtime_hdb
 		else
 			cp "$sig_cav_md5_file" "$runtime_hdb"
 		fi
@@ -2097,20 +2108,20 @@ sigup() {
 			hex_sigs=`$wc -l $sig_hex_file | awk '{print$1}'`
 			md5_sigs=`$wc -l $sig_md5_file | awk '{print$1}'`
 			yara_sigs=`grep -E -c ^rule $sig_yara_file | awk '{print$1}'`
-			if [ ! -f "$sig_cust_md5_file" ]; then
-				custhex_sigs=0
+			if [ ! -f "$sig_user_md5_file" ]; then
+				user_hex_sigs=0
 			else
-				custhex_sigs=`$wc -l $sig_cust_hex_file | awk '{print$1}'`
+				user_hex_sigs=`$wc -l $sig_user_hex_file | awk '{print$1}'`
 			fi
-			if [ ! -f "$sig_cust_hex_file" ]; then
-				custmd5_sigs=0
+			if [ ! -f "$sig_user_hex_file" ]; then
+				user_md5_sigs=0
 			else
-				custmd5_sigs=`$wc -l $sig_cust_md5_file | awk '{print$1}'`
+				user_md5_sigs=`$wc -l $sig_user_md5_file | awk '{print$1}'`
 			fi
-			cust_sigs=$[custhex_sigs+custmd5_sigs]
+			user_sigs=$[user_hex_sigs+user_md5_sigs]
 			
-			tot_sigs=$[md5_sigs+hex_sigs+custhex_sigs+custmd5_sigs+yara_sigs]
-			eout "{sigup} $tot_sigs signatures ($md5_sigs MD5 | $hex_sigs HEX | $yara_sigs YARA | $cust_sigs USER)" 1
+			tot_sigs=$[md5_sigs+hex_sigs+user_hex_sigs+user_md5_sigs+yara_sigs]
+			eout "{sigup} $tot_sigs signatures ($md5_sigs MD5 | $hex_sigs HEX | $yara_sigs YARA | $user_sigs USER)" 1
 		fi
 		cd $inspath
 		rm -rf $tmpwd

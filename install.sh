@@ -39,11 +39,12 @@ if [ ! -d "$inspath" ] && [ -d "files" ]; then
 	done
 	killall -SIGUSR2 clamd 2> /dev/null
 else
-	if [ "$(ps -A --user root -o "cmd" 2> /dev/null | grep maldetect | grep inotifywait)" ]; then
+	if [ "$(ps -A --user root -o "command" 2> /dev/null | grep maldetect | grep inotifywait)" ]; then
 		$inspath/maldet -k >> /dev/null 2>&1
 		monmode=1
 	fi
 	$find ${inspath}.* -maxdepth 0 -type d -mtime +30 2> /dev/null | xargs rm -rf
+	chattr -ia $inspath/internals/internals.conf
 	mv $inspath $inspath.bk$$
 	ln -fs $inspath.bk$$ $inspath.last
 	mkdir -p $inspath

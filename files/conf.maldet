@@ -204,6 +204,14 @@ quarantine_suspend_user="0"
 # [ default = 500 ]
 quarantine_suspend_user_minuid="500"
 
+# When using an external scan engine, such as ClamAV, should files be
+# quarantined if an error from the scanner engine is received?
+# This is defaulted to 1, always quarantine, as ClamAV generates an
+# error exit code for trivial errors such as file not found. As such, a
+# large percentage of scans will have ClamAV exiting with error code 2.
+# [ 0 = do not quarantine, 1 = always quarantine ]
+quarantine_on_error="1"
+
 ##
 # [ MONITORING OPTIONS ]
 ##
