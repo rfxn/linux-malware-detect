@@ -486,62 +486,61 @@ clean() {
 	file_chmod="$4"
 	file_size="$5"
 	file_md5="$6"
-	
-	v="$3"
+
 	sh_hitname=`echo $hitname | sed -r -e 's/\{(HEX|MD5|CAV|YARA)\}//' -e 's/\.[0-9]+$//'`
 	if [ -d "$cldir" ] && [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ] && [ -f "$file" ]; then
 		if [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "${file}.info" ]; then
 			file_path=`grep -E -v '\#' ${file}.info | cut -d':' -f9`
-			eout "{clean} restoring $file for cleaning attempt" $v
+			eout "{clean} restoring $file for cleaning attempt"
 			restore "$file" >> /dev/null 2>&1
 			if [ -f "$cldir/$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file_path with $sh_hitname rule" $v
+				eout "{clean} attempting to clean $file_path with $sh_hitname rule"
 				$cldir/$sh_hitname "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
 			fi
 			if [ -f "$cldir/custom.$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file_path with custom.$sh_hitname rule" $v
+				eout "{clean} attempting to clean $file_path with custom.$sh_hitname rule"
 				$cldir/custom.$sh_hitname "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
 			fi
-			eout "{clean} rescanning $file_path for malware hits" $v
+			eout "{clean} rescanning $file_path for malware hits"
 			cleanst="1"
 			scan_stage1 "$file_path" >> /dev/null 2>&1
 			unset cleanst
 			if [ -f "$file_path" ]; then
 				echo "$file_path" >> $sessdir/clean.$$
 				echo "$file_path" >> $clean_history
-				eout "{clean} clean successful on $file_path" $v
+				eout "{clean} clean successful on $file_path"
 			else
-				eout "{clean} clean failed on $file_path and returned to quarantine" $v
+				eout "{clean} clean failed on $file_path and returned to quarantine"
 			fi
 		elif [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "$file" ]; then
 			file_path="$file"
 			if [ -f "$cldir/$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file with $sh_hitname rule" $v
+				eout "{clean} attempting to clean $file with $sh_hitname rule"
 				$cldir/$sh_hitname "$file_path"
 			fi
 			if [ -f "$cldir/custom.$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file with custom.$sh_hitname rule" $v
+				eout "{clean} attempting to clean $file with custom.$sh_hitname rule"
 				$cldir/custom.$sh_hitname "$file_path"
 			fi
-			eout "{clean} scanning $file for malware hits" $v
+			eout "{clean} scanning $file for malware hits"
 			cleanst="1"
 			unset clean_failed
 			scan_stage1 "$file_path" 1 >> /dev/null 2>&1
 			unset cleanst
 			if [ "$clean_failed" == "1" ]; then
-				eout "{clean} clean failed on $file" $v
+				eout "{clean} clean failed on $file"
 			else
 				echo "$file" >> $sessdir/clean.$$
 				echo "$file_path" >> $clean_history
-				eout "{clean} clean successful on $file" $v
+				eout "{clean} clean successful on $file"
 			fi
 		fi
 	else
 		if [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ]; then
-			eout "file path error on $file, aborting." $v
+			eout "file path error on $file, aborting."
 			exit
 		else
-			eout "malware cleaning disabled - skipping $file" $v
+			eout "quarantine_clean and quarantine_hits are disabled; skipped file $file"
 		fi
 	fi
 }
@@ -608,6 +607,11 @@ restore_hitlist() {
 }
 
 clean_hitlist() {
+        if [ "$quarantine_clean" == "0" ] || [ "$quarantine_hits" == "0" ]; then
+		eout "quarantine_clean and/or quarantine_hits are disabled, nothing to do here."
+		exit 0
+	fi
+
 	hitlist="$sessdir/session.hits.$1"
 	if [ -f "$hitlist" ]; then
 		for file in `cat $hitlist | awk '{print$3}'`; do
