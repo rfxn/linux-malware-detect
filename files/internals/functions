@@ -491,35 +491,35 @@ clean() {
 	if [ -d "$cldir" ] && [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ] && [ -f "$file" ]; then
 		if [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "${file}.info" ]; then
 			file_path=`grep -E -v '\#' ${file}.info | cut -d':' -f9`
-			eout "{clean} restoring $file for cleaning attempt"
+			eout "{clean} restoring $file for cleaning attempt" 1
 			restore "$file" >> /dev/null 2>&1
 			if [ -f "$cldir/$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file_path with $sh_hitname rule"
+				eout "{clean} attempting to clean $file_path with $sh_hitname rule" 1
 				$cldir/$sh_hitname "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
 			fi
 			if [ -f "$cldir/custom.$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file_path with custom.$sh_hitname rule"
+				eout "{clean} attempting to clean $file_path with custom.$sh_hitname rule" 1
 				$cldir/custom.$sh_hitname "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
 			fi
-			eout "{clean} rescanning $file_path for malware hits"
+			eout "{clean} rescanning $file_path for malware hits" 1
 			cleanst="1"
 			scan_stage1 "$file_path" >> /dev/null 2>&1
 			unset cleanst
 			if [ -f "$file_path" ]; then
 				echo "$file_path" >> $sessdir/clean.$$
 				echo "$file_path" >> $clean_history
-				eout "{clean} clean successful on $file_path"
+				eout "{clean} clean successful on $file_path" 1
 			else
-				eout "{clean} clean failed on $file_path and returned to quarantine"
+				eout "{clean} clean failed on $file_path and returned to quarantine" 1
 			fi
 		elif [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "$file" ]; then
 			file_path="$file"
 			if [ -f "$cldir/$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file with $sh_hitname rule"
+				eout "{clean} attempting to clean $file with $sh_hitname rule" 1
 				$cldir/$sh_hitname "$file_path"
 			fi
 			if [ -f "$cldir/custom.$sh_hitname" ]; then
-				eout "{clean} attempting to clean $file with custom.$sh_hitname rule"
+				eout "{clean} attempting to clean $file with custom.$sh_hitname rule" 1
 				$cldir/custom.$sh_hitname "$file_path"
 			fi
 			eout "{clean} scanning $file for malware hits"
@@ -528,12 +528,14 @@ clean() {
 			scan_stage1 "$file_path" 1 >> /dev/null 2>&1
 			unset cleanst
 			if [ "$clean_failed" == "1" ]; then
-				eout "{clean} clean failed on $file"
+				eout "{clean} clean failed on $file" 1
 			else
 				echo "$file" >> $sessdir/clean.$$
 				echo "$file_path" >> $clean_history
-				eout "{clean} clean successful on $file"
+				eout "{clean} clean successful on $file" 1
 			fi
+		else
+			eout "{clean} could not find clean rule for hit $sh_hitname or file $file no longer exists." 1
 		fi
 	else
 		if [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ]; then
@@ -608,26 +610,41 @@ restore_hitlist() {
 
 clean_hitlist() {
         if [ "$quarantine_clean" == "0" ] || [ "$quarantine_hits" == "0" ]; then
-		eout "quarantine_clean and/or quarantine_hits are disabled, nothing to do here."
-		exit 0
-	fi
+                eout "{clean} quarantine_clean and/or quarantine_hits are disabled, nothing to do here." 1
+                exit 0
+        fi
 
-	hitlist="$sessdir/session.hits.$1"
-	if [ -f "$hitlist" ]; then
-		for file in `cat $hitlist | awk '{print$3}'`; do
-			if [ -f "$file" ]; then
-				hitname=`cat $hitlist | grep $file | awk '{print$1}'`
-				clean "$quardir/$file_name.$rnd" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hah" "$file"
-			else
-				hitname=`cat $hitlist | grep $file | awk '{print$1}'`
-				quarfile=`cat $hitlist | grep $file | awk '{print$5}'`
-				clean "$quardir/$file_name.$rnd" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hah" "$file"
-			fi
-		done
-	else
-		eout "{clean} invalid SCANID, aborting." 1
-		exit
-	fi
+        scanid="$1"
+        hitlist="$sessdir/session.hits.$scanid"
+        if [ -f "$hitlist" ]; then
+                is_quared=`egrep '=>' $hitlist`
+                if [ ! "$is_quared" ]; then
+                        lbreakifs set
+                        for file in `cat $hitlist | cut -d':' -f2 | sed 's/.//'`; do
+                                get_filestat "$file" 1
+                                hitname=`cat $hitlist | grep $file | awk '{print$1}'`
+                                if [ ! "$md5_hash" ]; then
+                                        md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
+                                fi
+                                clean "$file" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+                        done
+                        lbreakifs unset
+                else
+                        lbreakifs set
+                        for file in `cat $hitlist | cut -d'>' -f2 | sed 's/.//'`; do
+                                quar_get_filestat "${file}.info" 1
+                                hitname=`cat $hitlist | grep $file | awk '{print$1}'`
+                                if [ ! "$md5_hash" ]; then
+                                        md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
+                                fi
+                                clean "$file" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+                        done
+                        lbreakifs unset
+                fi
+        else
+                eout "{clean} invalid scanid $scanid or unknown error, aborting." 1
+                exit
+        fi
 }
 
 view_report() {
@@ -704,7 +721,7 @@ purge() {
 
 quarantine_suspend_user() {
 	file="$1"
-	file_stat "$file"
+	get_filestat "$file"
 	user="$file_owner"
 	user_id=`id -u $user`
 	if [ ! "$user" == "" ] && [ "$user_id" -ge "$quarantine_suspend_user_minuid" ]; then
@@ -726,7 +743,7 @@ quarantine_suspend_user() {
 	fi
 }
 
-file_stat() {
+get_filestat() {
 	file="$1"
 	times="$2"
 	if [ "$OSTYPE" == "FreeBSD" ]; then
@@ -734,6 +751,7 @@ file_stat() {
 		file_group=`$stat -f '%Sg' "$file"`
 		file_mode=`$stat -f '%p' "$file" | sed 's/^.//'`
 		file_size=`$stat -f '%Z' "$file"`
+		md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 		if [ "$times" ]; then
 			# atime mtime ctime (since epoch)
 			file_times=`$stat -f '%a:%m:%c' "$file"`
@@ -743,6 +761,7 @@ file_stat() {
 		file_group=`$stat -c '%G' "$file"`
 		file_mode=`$stat -c '%a' "$file"`
 		file_size=`$stat -c '%s' "$file"`
+		md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 		if [ "$times" ]; then
 			# atime mtime ctime (since epoch)
 			file_times=`$stat -c '%X:%Y:%Z' "$file"`
@@ -754,7 +773,7 @@ record_hit() {
 	file="$1"
 	hitname="$2"
 	if [ -f "$file" ]; then
-		file_stat "$file" 1
+		get_filestat "$file" 1
 		file_name=`basename "$file" 2> /dev/null`
 		if [ ! "$md5_hash" ]; then
 			md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
@@ -810,7 +829,7 @@ quar_hitlist() {
 		lbreakifs set
 		for file in `cat $hitlist | cut -d':' -f2 | sed 's/.//'`; do
 			if [ -f "$file" ]; then
-				file_stat "$file" 1
+				get_filestat "$file" 1
 				file_name=`basename "$file"`
 				file_namewc=`echo "$file_name" | $wc -m`
 				if [ ! "$md5_hash" ]; then
@@ -1263,7 +1282,7 @@ scan_strlen() {
 
 scan_stage1() {
 	file="$1"
-	clchk="$2"
+	clean_check="$2"
 	hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 	if  [ ! -z "$hash" ]; then
 		val_hash=`grep -m1 $hash $sig_user_md5_file $sig_md5_file`
@@ -1271,7 +1290,7 @@ scan_stage1() {
 			md5_hit="$hash"
 			md5_hitname=`echo $val_hash | cut -d':' -f4`
 			md5_hash="$hash"
-			if [ "$clchk" == "1" ]; then
+			if [ "$clean_check" == "1" ]; then
 				clean_failed=1
 			else
 	                        record_hit "$file" "$md5_hitname"
@@ -1280,7 +1299,7 @@ scan_stage1() {
 			unset val_hash md5_hit md5_hitname md5_hash
 		else
 			if [ -f "$file" ]; then
-				scan_stage2 "$file" $clchk >> /dev/null 2>&1
+				scan_stage2 "$file" $clean_check >> /dev/null 2>&1
 			fi
 			if [ -f "$file" ]; then
 				scan_strlen file "$file" >> /dev/null 2>&1
@@ -1293,7 +1312,7 @@ scan_stage1() {
 
 scan_stage2() {
 	file="$1"
-	clchk="$2"
+	clean_check="$2"
 	if [ -z "$ftype" ]; then
 		if [ -p "$hex_fifo_path" ] && [ "$scan_hexfifo" == "1" ]; then
 			if [ "$OSTYPE" == "FreeBSD" ]; then
@@ -1312,7 +1331,7 @@ scan_stage2() {
 		if [ ! -z "$val_hex" ]; then
 			hex_hit=`echo $val_hex | awk '{print$1}'`
 			hex_hitname=`echo $val_hex | awk '{print$2}'`
-			if [ "$clchk" == "1" ]; then
+			if [ "$clean_check" == "1" ]; then
 				clean_failed=1
 			else
                                 record_hit "$file" "$hex_hitname"
