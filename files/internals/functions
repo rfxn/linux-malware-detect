@@ -488,7 +488,7 @@ clean() {
 	file_md5="$6"
 	
 	v="$3"
-	sh_hitname=`echo $hitname | sed -e 's/{HEX}//' -e 's/{MD5}//' | tr '.' ' ' | awk '{print$1"."$2"."$3}'`
+	sh_hitname=`echo $hitname | sed -r -e 's/\{(HEX|MD5|CAV|YARA)\}//' -e 's/\.[0-9]+$//'`
 	if [ -d "$cldir" ] && [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ] && [ -f "$file" ]; then
 		if [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ] && [ -f "${file}.info" ]; then
 			file_path=`grep -E -v '\#' ${file}.info | cut -d':' -f9`
