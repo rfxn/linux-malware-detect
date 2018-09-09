@@ -502,9 +502,9 @@ clean() {
 				$cldir/custom.$sh_hitname "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
 			fi
 			eout "{clean} rescanning $file_path for malware hits" 1
-			cleanst="1"
+			clean_state="1"
 			scan_stage1 "$file_path" >> /dev/null 2>&1
-			unset cleanst
+			unset clean_state
 			if [ -f "$file_path" ]; then
 				echo "$file_path" >> $sessdir/clean.$$
 				echo "$file_path" >> $clean_history
@@ -523,10 +523,10 @@ clean() {
 				$cldir/custom.$sh_hitname "$file_path"
 			fi
 			eout "{clean} scanning $file for malware hits"
-			cleanst="1"
+			clean_state="1"
 			unset clean_failed
 			scan_stage1 "$file_path" 1 >> /dev/null 2>&1
-			unset cleanst
+			unset clean_state
 			if [ "$clean_failed" == "1" ]; then
 				eout "{clean} clean failed on $file" 1
 			else
@@ -809,8 +809,8 @@ quarantine() {
 			if [ ! -z "$scan_session" ]; then
 				echo "$hitname : $file => $quardir/$file_name.$rnd" >> $scan_session
 			fi
-			if [ "$quarantine_clean" == "1" ] && [ ! "$cleanst" == "1" ]; then
-				unset cleanst
+			if [ "$quarantine_clean" == "1" ] && [ ! "$clean_state" == "1" ]; then
+				unset clean_state
 				clean "$quardir/$file_name.$rnd" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash" "$file"
 			fi
 		else
@@ -851,8 +851,8 @@ quar_hitlist() {
 				if [ "$quarantine_suspend_user" == "1" ]; then
 					quarantine_suspend_user "$file"
 				fi
-				if [ "$quarantine_clean" == "1" ] && [ ! "$cleanst" == "1" ]; then
-					unset cleanst
+				if [ "$quarantine_clean" == "1" ] && [ ! "$clean_state" == "1" ]; then
+					unset clean_state
 					hitname=`cat $hitlist | grep $file | awk '{print$1}'`
 					clean "$quardir/$file_name.$rnd" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hah" "$file"
 				fi
@@ -1284,6 +1284,10 @@ scan_stage1() {
 	file="$1"
 	clean_check="$2"
 	hash=`eval $md5sum \"$file\" | awk '{print$1}'`
+	if [ -z "$runtime_hexstrings" ]; then
+		sigignore
+		gensigs
+	fi
 	if  [ ! -z "$hash" ]; then
 		val_hash=`grep -m1 $hash $sig_user_md5_file $sig_md5_file`
 		if [ ! -z "$val_hash" ]; then
