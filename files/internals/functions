@@ -658,7 +658,10 @@ view_report() {
 			CLEAN=`cat $file | grep "TOTAL CLEANED" | sed 's/TOTAL //'`
 			TIME=`cat $file | grep -E "^TIME|^STARTED" | sed -e 's/TIME: //' -e 's/STARTED: //' | awk '{print$1,$2,$3,$4}'`
 			TIME_U=`date -d "$TIME" "+%s" 2> /dev/null`
-                        ETIME=`cat $file | grep "ELAPSED" | awk '{print$1,$2}' | sed 's/ELAPSED/RUNTIME/'`
+                        ETIME=`cat $file | grep "ELAPSED" | awk '{print$1,$2,$3}' | sed 's/ELAPSED/RUNTIME/'`
+			if [ -z "$ETIME" ]; then
+				ETIME="unknown"
+			fi
 			if [ ! -z "$SCANID" ] && [ ! -z "$TIME" ]; then
 				clean_zero=`echo $CLEAN | awk '{print$2}'`
 				if [ -z "$clean_zero" ]; then
@@ -1399,21 +1402,30 @@ genalert() {
 				fi
 			fi
 		elif [ "$type" == "daily" ] || [ "$type" == "digest" ]; then
-			scan_start_hr=`ps -p $(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
+			inotify_start_time=`ps -p $(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
+			scan_start_hr=`date -d "$inotify_start_time" +"%b %e %Y %H:%M:%S %z"`
+			scan_start_elapsed=$(($(date +'%s')-$(date -d "$scan_start_hr" +'%s')))
+			inotify_run_time=`echo $(($scan_start_elapsed/86400))d $(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))/3600))h:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%3600/60))m:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%60))s`
+
 			rm -f $tmpdir/.digest.alert.hits $tmpdir/.digest.clean.hits $tmpdir/.digest.monitor.alert $tmpdir/.digest.susp.hits
+
 			scanid="$datestamp.$$"
 			scan_session=`cat $sessdir/session.monitor.current`
+
 			$tlog $scan_session digest.alert > $tmpdir/.digest.alert.hits
 			$tlog $clean_history digest.clean.alert > $tmpdir/.digest.clean.hits
 			$tlog $monitor_scanned_history digest.monitor.alert > $tmpdir/.digest.monitor.alert
 			$tlog $suspend_history digest.susp.alert > $tmpdir/.digest.susp.hits
+
 			tot_hits=`$wc -l $tmpdir/.digest.alert.hits | awk '{print$1}'`
 			tot_cl=`$wc -l $tmpdir/.digest.clean.hits | awk '{print$1}'`
 			tot_files=`$wc -l $tmpdir/.digest.monitor.alert | awk '{print$1}'`
 			tot_susp=`$wc -l $tmpdir/.digest.susp.hits | awk '{print$1}'`
+
 			trim_log $monitor_scanned_history 50000
 			trim_log $clean_history 50000
 			trim_log $suspend_history 50000
+
 			$tlog $sessdir/session.hits.$datestamp.$$ digest.alert >> /dev/null 2>&1
 			$tlog $clean_history digest.clean.alert >> /dev/null 2>&1
 			$tlog $monitor_scanned_history digest.monitor.alert >> /dev/null 2>&1
@@ -1430,17 +1442,17 @@ genalert() {
 				echo "$scanid" > $sessdir/session.last
 				email_subj="${email_subj}: monitor summary"
 				if [ -f "$mail" ]; then
-                    cat $tmpf | $mail -s "$email_subj" $email_addr
-                    eout "{alert} sent $type alert to $email_addr"
-                elif [ -f "$sendmail" ]; then
-                    if ! grep -q "SUBJECT: " "$tmpf"; then
-                        echo -e "SUBJECT: $email_subj\n$(cat $tmpf)" > $tmpf
-                    fi
-                    cat $tmpf | $sendmail -t $email_addr
-                    eout "{alert} sent $type alert to $email_addr"
-                else
-                    eout "{scan} no \$mail or \$sendmail binaries found, e-mail alerts disabled."
-                fi
+					cat $tmpf | $mail -s "$email_subj" $email_addr
+					eout "{alert} sent $type alert to $email_addr"
+		                elif [ -f "$sendmail" ]; then
+					if ! grep -q "SUBJECT: " "$tmpf"; then
+						echo -e "SUBJECT: $email_subj\n$(cat $tmpf)" > $tmpf
+					fi
+					cat $tmpf | $sendmail -t $email_addr
+					eout "{alert} sent $type alert to $email_addr"
+				else
+					eout "{scan} no \$mail or \$sendmail binaries found, e-mail alerts disabled."
+				fi
 				rm -f $tmpf $tmpdir/.digest.alert.hits $tmpdir/.digest.clean.hits $tmpdir/.digest.monitor.alert $tmpdir/.digest.susp.hits
 			fi
 		else

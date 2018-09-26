@@ -12,6 +12,11 @@ COMPLETED: $scan_end_hr
 ELAPSED:   ${scan_et}s [find: ${file_list_et}s]
 
 EOF
+else
+cat >> $tmpf <<EOF
+MODE:      inotify digest
+ELAPSED:   $inotify_run_time
+EOF
 fi
 if [ "$spath" ]; then
 	echo "PATH:          $hrspath" >> $tmpf
