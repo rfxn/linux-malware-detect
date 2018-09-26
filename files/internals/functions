@@ -658,9 +658,9 @@ view_report() {
 			CLEAN=`cat $file | grep "TOTAL CLEANED" | sed 's/TOTAL //'`
 			TIME=`cat $file | grep -E "^TIME|^STARTED" | sed -e 's/TIME: //' -e 's/STARTED: //' | awk '{print$1,$2,$3,$4}'`
 			TIME_U=`date -d "$TIME" "+%s" 2> /dev/null`
-                        ETIME=`cat $file | grep "ELAPSED" | awk '{print$1,$2,$3}' | sed 's/ELAPSED/RUNTIME/'`
+                        ETIME=`cat $file | grep "ELAPSED" | awk '{print$1,$2}' | sed 's/ELAPSED/RUNTIME/'`
 			if [ -z "$ETIME" ]; then
-				ETIME="unknown"
+				ETIME="RUNTIME: unknown"
 			fi
 			if [ ! -z "$SCANID" ] && [ ! -z "$TIME" ]; then
 				clean_zero=`echo $CLEAN | awk '{print$2}'`
@@ -1405,7 +1405,7 @@ genalert() {
 			inotify_start_time=`ps -p $(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
 			scan_start_hr=`date -d "$inotify_start_time" +"%b %e %Y %H:%M:%S %z"`
 			scan_start_elapsed=$(($(date +'%s')-$(date -d "$scan_start_hr" +'%s')))
-			inotify_run_time=`echo $(($scan_start_elapsed/86400))d $(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))/3600))h:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%3600/60))m:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%60))s`
+			inotify_run_time=`echo $(($scan_start_elapsed/86400))d:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))/3600))h:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%3600/60))m:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%60))s`
 
 			rm -f $tmpdir/.digest.alert.hits $tmpdir/.digest.clean.hits $tmpdir/.digest.monitor.alert $tmpdir/.digest.susp.hits
 
