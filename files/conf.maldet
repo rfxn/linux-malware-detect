@@ -225,7 +225,7 @@ quarantine_on_error="1"
 # This option is REQUIRED for the systemd maldet.service script. That script
 # only checks for the value of $default_monitor_mode. The service will fail to
 # start if a value is not provided.
-# default_monitor_mode="users"
+default_monitor_mode="users"
 # default_monitor_mode="/usr/local/maldetect/monitor_paths"
 
 # The base number of files that can be watched under a path,
