@@ -105,13 +105,9 @@ prerun() {
 		exit 1
 	fi
 	
-	if [ ! -f "$mail" ] || [ -z "$mail" ]; then
+	if [ "$email_alert" == "1" ] && [ ! -f "$mail" ] && [ ! -f "$sendmail" ]; then
 		email_alert=0
 	fi
-
-	if [ "$email_alert" == "0" ] && [ -f "$sendmail" ]; then
-        email_alert=1
-    fi
 	
 	if [ ! -f "$sig_user_hex_file" ]; then
 		touch $sig_user_hex_file
