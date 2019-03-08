@@ -25,6 +25,23 @@ email_addr="you@domain.com"
 # [0 = disabled, 1 = enabled]
 email_ignore_clean="1"
 
+# Enable or disable slack alerts, this will upload the scan report as a file
+# into one or more slack channels
+# [0 = disabled, 1 = enabled]
+slack_alert="0"
+
+# The file name of the file that will be uploaded to slack channel(s)
+slack_subj="maldet alert from $(hostname)"
+
+# Slack authentication token.
+# Requires scope: files:write:user
+# more information https://api.slack.com/methods/files.upload
+slack_token="AUTH_TOKEN"
+
+# Comma-separated list of channel names or IDs
+# where the scan report will be shared.
+slack_channels="maldetreports"
+
 # This controls the daily automatic updates of LMD signature files
 # and cleaner rules. The signature update process preserves any
 # custom signature or cleaner files. It is highly recommended that this
