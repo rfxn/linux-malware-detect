@@ -831,6 +831,7 @@ quar_hitlist() {
 				get_filestat "$file" 1
 				file_name=`basename "$file"`
 				file_namewc=`echo "$file_name" | $wc -m`
+				file_hitname=`egrep -m1 "$file" $hitlist | awk '{print$1}'`
 				if [ ! "$md5_hash" ]; then
 					md5_hash=`eval $md5sum \"$file\" | awk '{print$1}'`
 				fi
@@ -846,7 +847,7 @@ quar_hitlist() {
 				touch --no-create "$quardir/$file_name.$rnd"
 				echo -e "# owner:group:mode:size(b):md5:atime(epoch):mtime(epoch):ctime(epoch):file(path)\n$file_owner:$file_group:$file_mode:$file_size:$md5_hash:$file_times:$file" > $quardir/$file_name.$rnd.info
 				eout "{quar} malware quarantined from '$file' to '$quardir/$file_name.$rnd'" 1
-				echo "$utime:$hitname:$file:$file_owner:$file_group:$md5_hash:$file_size:$quardir/$file_name.$rnd" >> $quar_history
+				echo "$utime:$file_hitname:$file:$file_owner:$file_group:$md5_hash:$file_size:$quardir/$file_name.$rnd" >> $quar_history
 				if [ "$quarantine_suspend_user" == "1" ]; then
 					quarantine_suspend_user "$file"
 				fi
