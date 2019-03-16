@@ -1,7 +1,7 @@
 cat > /usr/local/maldetect/conf.maldet <<EOF
 #
 ##
-# Linux Malware Detect v1.6.4.1
+# Linux Malware Detect v1.6.4
 #             (C) 2002-2018, R-fx Networks <proj@r-fx.org>
 #             (C) 2018, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
@@ -25,7 +25,7 @@ email_addr="$email_addr"
 # Ignore e-mail alerts for scan reports in which all malware hits
 # have been automatically and successfully cleaned.
 # [0 = disabled, 1 = enabled]
-email_ignore_clean="$email_ignore_clean"
+email_ignore_clean="1"
 
 # This controls the daily automatic updates of LMD signature files
 # and cleaner rules. The signature update process preserves any
