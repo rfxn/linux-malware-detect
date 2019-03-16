@@ -1,4 +1,4 @@
-v1.6.4 | Sep XX 2018:
+v1.6.4 | Mar 18 2019:
 
 v1.6.3 | Sep 01 2018:
 [Fix] ensure clamscan_max_filesize is always set; pr #296
