@@ -1150,7 +1150,7 @@ scan() {
 		if [ "$clamscan_return" == "2" ]; then
 			if [ "$quarantine_on_error" == "0" ] || [ -z "$quarantine_on_error" ]; then
 				quarantine_hits=0
-				eout "{scan} clamscan returned an error, check $clamscan_log for details; quarantine has been disabled!" 1
+				eout "{scan} clamscan returned an error, check $clamscan_log for details; quarantine_on_error=0 or unset, quarantine has been disabled!" 1
 			else
 				eout "{scan} clamscan returned an error, check $clamscan_log for details!" 1
 			fi
