@@ -10,7 +10,6 @@ v1.6.4 | Mar 18 2019:
 [Change] don't need "find" if given a file list; pr# 303 sporks5000
 [Change] rename ambiguous internal variables related to user signatures
 [Change] removed clamscan_return code capture from piped logic of clam(d)scan execution; now always capture return code, even on good exits
-[Change] always log clam(d)scan return code
 [Change] scan results now explicitly exclude any occurrences of files related to 'no reply from clamd' errors
 [Change] add backward compatibility for renamed internals.conf variables
 [Change] removed legacy $verbose tagging at the end of eout() calls
