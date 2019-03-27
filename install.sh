@@ -9,6 +9,7 @@
 #
 PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 ver=1.6.4
+ver_major=1.6
 inspath=/usr/local/maldetect
 logf=$inspath/logs/event_log
 conftemp="$inspath/internals/importconf"
@@ -57,7 +58,7 @@ else
 	gzip -9 $inspath/maldet.1
 	ln -fs $inspath/maldet.1.gz /usr/local/share/man/man1/maldet.1.gz
 	cp -f $inspath.bk$$/ignore_* $inspath/  >> /dev/null 2>&1
-	if [ "$ver" == "1.5" ] || [ "$ver" == "1.6" ]; then
+	if [ "$ver_major" == "1.5" ] || [ "$ver_major" == "1.6" ]; then
 		cp -f $inspath.bk$$/sess/* $inspath/sess/ >> /dev/null 2>&1
 		cp -f $inspath.bk$$/tmp/* $inspath/tmp/ >> /dev/null 2>&1
 		cp -f $inspath.bk$$/quarantine/* $inspath/quarantine/ >> /dev/null 2>&1
