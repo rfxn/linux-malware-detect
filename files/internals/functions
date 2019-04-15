@@ -1745,7 +1745,7 @@ monitor_init() {
 		exit
 	fi
 	
-	if [ -f "$ignore_inotify" ] && [ ! -s "$ignore_inotify" ]; then
+	if [ -f "$ignore_inotify" ] && [ -s "$ignore_inotify" ]; then
 		for igfile in `cat $ignore_inotify | grep -vE '^$'`; do
 			if [ "$igregexp" ]; then
 				igregexp="$igregexp|$igfile"
