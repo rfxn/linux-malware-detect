@@ -32,6 +32,9 @@ v1.6.4 | Mar 18 2019:
 [Fix] clean function was not properly stripping {CAV} and {YARA} prefixes from signature names when executing cleaner rules
 [Fix] clean function was not properly handling signature names with both underscores and periods
 [Fix] refactored clean_hitlist() & clean() functions to resolve pathing errors when cleaning previous session hits; issue #203
+[Fix] ignore_inotify file exist/empty file negative match; issue #330
+[Fix] operator issue cron.daily #331
+[Fix] install.sh $ver required major numbering; renamed to ver_major so that session preservation semantics continue to work
 
 v1.6.3 | Sep 01 2018:
 [Fix] ensure clamscan_max_filesize is always set; pr #296
