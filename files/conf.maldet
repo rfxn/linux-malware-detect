@@ -299,3 +299,24 @@ inotify_verbose="0"
 # [ string length in characters, default = 150000 ]
 string_length_scan="0"		# [ 0 = disabled, 1 = enabled ]
 string_length="150000"		# [ max string length ]
+
+##
+# [ STATISTICAL ELK COLLECT ]
+##
+# Enable statistic to bring it into ELK stack
+enable_statistic="0"
+
+# The host definition for the TCP input
+# Must be define if enable_statistic=1
+# Example : 192.168.1.1
+elk_host=""
+
+# The port definition for the TCP input
+# Must be define if enable_statistic=1
+# Example : 12345
+elk_port=""
+
+# The index definition for the Elasticsearch
+# Must be define if enable_statistic=1
+# Example : maldet
+elk_index=""
