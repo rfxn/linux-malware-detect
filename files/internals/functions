@@ -696,13 +696,29 @@ view_report() {
 	fi
 	if [ "$rid" == "" ] && [ -f "$sessdir/session.last" ]; then
 		rid=`cat $sessdir/session.last`
+		if [ "$2" == "dump" ]; then
+			cat $sessdir/session.$rid
+			exit
+		fi
 		$EDITOR $sessdir/session.$rid
 	elif [ -f "$sessdir/session.$rid" ]; then
+		if [ "$2" == "dump" ]; then
+			cat $sessdir/session.$rid
+			exit
+		fi
 		$EDITOR $sessdir/session.$rid
 	else
 		echo "{report} no report found, aborting."
 		exit
 	fi
+}
+
+dump_report() {
+	rid="$1"
+	if [ rid == "" ]; then
+		rid=`cat sessdir/session.last`
+	fi
+	view_report $rid dump
 }
 
 view() {
