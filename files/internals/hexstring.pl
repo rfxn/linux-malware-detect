@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 #
 ##
-# Linux Malware Detect v1.6.4.1
+# Linux Malware Detect v1.6.5.1
 #             (C) 2002-2019, R-fx Networks <proj@r-fx.org>
 #             (C) 2019, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2

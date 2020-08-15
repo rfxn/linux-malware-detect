@@ -1,5 +1,5 @@
 ##
-# Linux Malware Detect v1.6.4
+# Linux Malware Detect v1.6.5
 #             (C) 2002-2019, R-fx Networks <proj@r-fx.org>
 #             (C) 2019, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
@@ -186,7 +186,7 @@ eout() {
 		printf "%s\n" "$trim,${log_size}d" w | ed -s $maldet_log 2> /dev/null
 	fi
 	if [ ! "$msg" == "" ]; then
-		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) $appn($$): $msg" >> $maldet_log
+		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) $appn($$): $msg" >> $maldet_log
 		if [ ! -z "$stdout" ]; then
 			echo "$appn($$): $msg"
 		fi
@@ -712,6 +712,15 @@ view() {
 
 purge() {
 	:> $maldet_log
+        log_size=`$wc -l $inotify_log | awk '{print$1}'`
+        if [ "$inotify_trim" ]; then
+                trim=$(($log_size - 1000))
+                log_chars=`printf "%s\n" "1,${trim}p" | ed -s $inotify_log 2> /dev/null | wc -c`
+                tlog_new=$(( `cat $inspath/tmp/inotify` - $log_chars ))
+                echo $tlog_new > $inspath/tmp/inotify
+                printf "%s\n" "1,${trim}d" w | ed -s $inotify_log 2> /dev/null
+                eout "{mon} inotify log file trimmed"
+	fi
 	rm -f $tmpdir/* $quardir/* $sessdir/* 2> /dev/null
 	eout "{glob} logs and quarantine data cleared by user request (-p)" 1
 }
@@ -1141,9 +1150,9 @@ scan() {
 			eout "{scan} scan of $hrspath ($tot_files files) in progress..." 1
 		fi
 
-		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan start"  >> $clamscan_log
+		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) clamscan start"  >> $clamscan_log
 		clamscan_results="$tmpdir/.clamscan.$$"
-		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) executed: $nice_command $clamscan $clamopts --infected --no-summary -f $find_results" >> $clamscan_log
+		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) executed: $nice_command $clamscan $clamopts --infected --no-summary -f $find_results" >> $clamscan_log
 		$nice_command $clamscan $clamopts --infected --no-summary -f $find_results > $clamscan_results 2>> $clamscan_log
 		clamscan_return=$?
 		if [ "$clamscan_return" == "2" ]; then
@@ -1159,7 +1168,7 @@ scan() {
 			quarantine_hits=0
                         eout "{scan} clamscan returned a fatal error in scan results, check $clamscan_log for details; quarantine has been disabled!" 1
 		fi
-		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan end return $clamscan_return"  >> $clamscan_log
+		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) clamscan end return $clamscan_return"  >> $clamscan_log
 
 		lbreakifs set
 		for hit in `grep -E -v 'ERROR$|lstat()|no reply from clamd' $clamscan_results | sed -e 's/.UNOFFICIAL//' -e 's/ FOUND$//' | awk -F':' '{print$2":"$1}' | sed 's/.//'`; do
@@ -1186,7 +1195,7 @@ scan() {
 			unset ignore_hit
 		done
 		lbreakifs unset
-		echo "$(date +"%b %d %H:%M:%S") $(hostname -s) clamscan end"  >> $clamscan_log
+		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) clamscan end"  >> $clamscan_log
 	else
 		if [ -z "$hscan" ]; then
 			eout "{scan} scan of $hrspath ($tot_files files) in progress..." 1
@@ -1566,7 +1575,7 @@ monitor_cycle() {
 monitor_check() {
                 monitor_scanlist="$tmpdir/.monitor.scan.${RANDOM}${RANDOM}"
 		touch $monitor_scanlist ; chmod 600 $monitor_scanlist
-		$tlog $inotify_log inotify | grep -E "CREATE|MODIFY|MOVED_FROM|MOVED_TO" | grep -E -v '/.. ' | awk '{print$1}' | sort | uniq > $monitor_scanlist
+		$tlog $inotify_log inotify | awk -F"CREATE|MODIFY|MOVED_FROM|MOVED_TO" '{print $1}' | grep -E -v '/.. ' | sort | uniq | sed 's/.{1}$//' > $monitor_scanlist
 		if [ "$scan_clamscan" == "1" ]; then
 	                clamscan_results="$tmpdir/.clamscan.result.${RANDOM}${RANDOM}"
 			touch $clamscan_results ; chmod 600 $clamscan_results

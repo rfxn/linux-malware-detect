@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 ##
-# Linux Malware Detect v1.6.4
+# Linux Malware Detect v1.6.5
 #             (C) 2002-2019, R-fx Networks <proj@r-fx.org>
 #             (C) 2019, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
 ##
 #
 PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
-ver=1.6.4
+ver=1.6.5
 ver_major=1.6
 inspath=/usr/local/maldetect
 logf=$inspath/logs/event_log

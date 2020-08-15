@@ -1,3 +1,8 @@
+v1.6.5 | Apr 24 2020:
+[Fix] monitor mode white space detection; issue #354
+[Change] event_log/clamscan_log now record year in timestamp; issue #352
+[Change] -p|--purge will now trim the inotify_log; issue #350
+
 v1.6.4 | Mar 18 2019:
 [New] add quarantine_on_error variable to control quarantine behavior when scanner engines such as ClamAV encounter an error
 [New] add support for slack alerts; pr #240 mostafahussein
