@@ -276,7 +276,7 @@ option gives a detailed summary of usage options:
        e.g: maldet --report 050910-1534.21135
        e.g: maldet --report SCANID user@domain.com
 
-    -D, --dump-report SCANID
+    -E, --dump-report SCANID
        Similar to -e/--report except dumps the report to stdout instead.
        e.g: maldet --dump-report
        e.g: maldet --dump-report 050910-1534.21135
