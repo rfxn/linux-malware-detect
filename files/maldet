@@ -257,6 +257,11 @@ else
 				shift
 				view_report "$1" "$2"
 			;;
+			-E|--dump-report)
+				header
+				shift
+				dump_report "$1"
+			;;
 			-p|--purge)
 				header
 				purge

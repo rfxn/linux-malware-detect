@@ -6,7 +6,7 @@ maldet \- Linux Malware Detect
 .PP
 maldet [\-h|\-\-help] [\-a|\-\-scan\-all PATH] [\-r|\-\-scan\-recent PATH DAYS] [\-f|\-\-file\-list PATH]
 [\-i|\-\-include\-regex] [\-x|\-\-exclude\-regex] [\-b|\-\-background] [\-m|\-\-monitor] [\-k|\-\-kill\-monitor]
-[\-c|\-\-checkout] [\-q|\-\-quarantine] [\-s|\-\-restore] [\-n|\-\-clean] [\-l|\-\-log] [\-e|\-\-report]
+[\-c|\-\-checkout] [\-q|\-\-quarantine] [\-s|\-\-restore] [\-n|\-\-clean] [\-l|\-\-log] [\-e|\-\-report] [\-E|\-\-dump\-report]
 [\-u|\-\-update\-sigs]
 .SH DESCRIPTION
 Linux Malware Detect is a malware scanner for Linux released under the GNU GPLv2 license, that is designed around the threats faced in shared hosted environments. It uses threat data from network edge intrusion detection systems to extract malware that is actively being used in attacks and generates signatures for detection. In addition, threat data is also derived from user submissions with the LMD checkout feature and from malware community resources. The signatures that LMD uses are MD5 file hashes and HEX pattern matches, they are also easily exported to any number of detection tools such as ClamAV.
@@ -186,6 +186,12 @@ e.g: maldet \fB\-\-report\fR
 e.g: maldet \fB\-\-report\fR list
 e.g: maldet \fB\-\-report\fR 050910\-1534.21135
 e.g: maldet \fB\-\-report\fR SCANID user@domain.com
+.HP
+\fB\-e\fR, \fB\-\-dump-report\fR SCANID
+.IP
+Similar to \-\-report but dumps the report to stdout instead.
+e.g: maldet \fB\-\-dump\-report\fR
+e.g: maldet \fB\-\-dump\-report\fR 050910\-1534.21135
 .HP
 \fB\-s\fR, \fB\-\-restore\fR FILE|SCANID
 .IP
