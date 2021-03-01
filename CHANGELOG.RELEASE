@@ -1,8 +1,10 @@
-v1.6.5 | Apr 24 2020:
+v1.6.5 | ?? ?? 2020:
 [Fix] monitor mode white space detection; issue #354
 [Change] event_log/clamscan_log now record year in timestamp; issue #352
 [Change] -p|--purge will now trim the inotify_log; issue #350
 [New] -D|--dump-report to dump reports to stdout; pr #362
+[Fix] monitor mode will now fail to start if 'ed' is not installed; issue #350
+      inotify_log requires in-place inode pruning to prevent exponential growth
 
 v1.6.4 | Mar 18 2019:
 [New] add quarantine_on_error variable to control quarantine behavior when scanner engines such as ClamAV encounter an error
