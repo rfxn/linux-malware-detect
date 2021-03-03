@@ -1492,6 +1492,17 @@ genalert() {
 			fi
 		fi
 	fi
+
+	if [ "$telegram_alert" == "1" ]; then
+		if [ "$type" == "file" ] && [ -f "$file" ]; then
+			telegram_response=$(curl -F "document=@$file" -F "caption=$telegram_file_caption" "https://api.telegram.org/$telegram_bot_token/sendDocument?chat_id=$telegram_channel_id" | grep -oP '^{"ok":true')
+			if [ "$telegram_response" ]; then
+				eout "{alert} scan report sent to telegram channel: $telegram_channel_id" 0
+			else
+				eout "{alert} could not upload scan report to telegram channel, alert discarded" 1
+			fi
+		fi
+	fi
 }
 
 
