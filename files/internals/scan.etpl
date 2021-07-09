@@ -76,6 +76,14 @@ if [ ! "$tot_hits" == "0" ]; then
                 cat $hitlist_file | column -s ':' -t -o ':' >> $tmpf
         else
                 cat $hitlist_file >> $tmpf
+                if [ "$enable_statistic" == "1" ]; then
+                        export IFS=$(echo -en "\n\b")
+                        for showhit in `cat $hitlist_file`; do
+                                curl --output  /dev/null --silent --show-error -XPOST "${elk_host}:${elk_port}/$(if [ $elk_index != '' ]; then echo "${elk_index}/message"; fi )" -H 'Content-Type: application/json' -d "$(echo $showhit|awk -v date=$(date +%s) -v hostname=$(hostname) '{print "{\"date\" : \""date"\", \"hit\" : \""$1"\", \"file\" : \""$3"\", \"hostname\" : \""hostname"\"}"}')"
+                        done
+                        export IFS=' '
+                fi
+
         fi
  fi
 fi
