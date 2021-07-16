@@ -914,7 +914,7 @@ clamselector() {
                 if [ "$remote_clamd" ]; then
                        clamd=1
                        clambin="clamdscan"
-                        clamopts="--fdpass -c /etc/clamd.d/clamd.remote.conf"
+                        clamopts="--fdpass -c $remote_clamd"
                 elif [ "$isclamd" ] && [ "$isclamd_root" ]; then
                         clamd=1
                         clambin="clamdscan"
