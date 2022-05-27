@@ -180,10 +180,12 @@ eout() {
 	if [ ! -f "$maldet_log" ]; then
 		touch $maldet_log
 	fi
-	log_size=`$wc -l $maldet_log | awk '{print$1}'`
-	if [ "$log_size" -ge "20000" ]; then
-		trim=1000
-		printf "%s\n" "$trim,${log_size}d" w | ed -s $maldet_log 2> /dev/null
+	if [ "$maldet_log_truncate" == "1" ]; then
+		log_size=`$wc -l $maldet_log | awk '{print$1}'`
+		if [ "$log_size" -ge "20000" ]; then
+			trim=1000
+			printf "%s\n" "$trim,${log_size}d" w | ed -s $maldet_log 2> /dev/null
+		fi
 	fi
 	if [ ! "$msg" == "" ]; then
 		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) $appn($$): $msg" >> $maldet_log
