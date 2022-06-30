@@ -88,8 +88,8 @@ elif [ "$cron_daily_scan" == "1" ]; then
 	elif [ -d "/var/customers/webs" ]; then
 		# froxlor
 		$inspath/maldet -b -r /var/customers/webs/ $scan_days >> /dev/null 2>&1
-        elif [ -d "/usr/local/vesta" ]; then
-                # VestaCP
+        elif [ -d "/usr/local/vesta" ] || [ -d "/usr/local/hestia" ]; then
+                # VestaCP or HestiaCP
                 $inspath/maldet -b -r /home/?/web/?/public_html/,/home/?/web/?/public_shtml/,/home/?/tmp/,/home/?/web/?/private/ $scan_days >> /dev/null 2>&1
         elif [ -d "/usr/share/dtc" ]; then
                 # DTC
