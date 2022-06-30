@@ -299,3 +299,21 @@ inotify_verbose="0"
 # [ string length in characters, default = 150000 ]
 string_length_scan="0"		# [ 0 = disabled, 1 = enabled ]
 string_length="150000"		# [ max string length ]
+
+# Remote clamd support
+# If you're running a dedicated clamd server, you can instruct clamdscan to use
+# it instead of the local daemon (which doesn't even need to run). To use
+# this you need to create a 'clamd.remote.conf' with:
+#
+# TCPSocket3310
+# TCPAddr clamd.example.com
+#
+# To instruct maldetect to use that config, enter the path to that file:
+remote_clamd="/etc/clamd.d/clamd.remote.conf"
+
+# If remote clamd doesn't respond properly, how many times should we retry
+# the same file
+max_retry="5"
+
+# How many seconds to sleep between retrys
+retry_sleep="3"

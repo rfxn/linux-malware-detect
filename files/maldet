@@ -165,6 +165,8 @@ else
 				elif [ "$1" == "reload" ] || [ "$1" == "RELOAD" ]; then
 					eout "{mon} queued monitor for configuration reload" 1
 					touch $inspath/reload_monitor
+				elif [ ! -f "$(which ed 2> /dev/null)" ]; then
+					eout "{mon} could not find monitor mode dependency 'ed' in PATH, please apt/yum/dnf install ed and try again."
 				else
 					svc=m
 					trap trap_exit 2
