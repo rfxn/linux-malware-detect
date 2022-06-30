@@ -567,14 +567,14 @@ restore() {
                 chmod $file_mode "$quardir/$file" >> /dev/null 2>&1
                 mv -f "$quardir/$file" "$file_path"
 		touch -m --date=@${file_mtime} "$file_path"
-                eout "{restore} quarantined file $file restored to $file_path" 1
+                eout "{restore} quarantined file '$file' restored to '$file_path'" 1
         elif [ -f "$file" ] && [ -f "${file}.info" ]; then
 		quar_get_filestat "${file}.info"
                 chown ${file_owner}.${file_group} "$file" >> /dev/null 2>&1
                 chmod $file_mode "$file" >> /dev/null 2>&1
                 mv -f "$file" "$file_path"
 		touch -m --date=@${file_mtime} "$file_path"
-                eout "{restore} quarantined file $file restored to $file_path" 1
+                eout "{restore} quarantined file '$file' restored to '$file_path'" 1
         else
                 eout "{restore} invalid file or could not be found" 1
         fi
