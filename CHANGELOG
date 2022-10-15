@@ -1,3 +1,15 @@
+v1.6.5 | Oct xx 2022:
+[Fix] monitor mode white space detection; issue #354
+[Change] event_log/clamscan_log now record year in timestamp; issue #352
+[Change] -p|--purge will now trim the inotify_log; issue #350
+[New] -D|--dump-report to dump reports to stdout; pr #362
+[Fix] monitor mode will now fail to start if 'ed' is not installed; issue #350
+      inotify_log requires in-place inode pruning to prevent exponential growth
+[Fix] inotify kernel support on debian11 checking only System.map; pr #398
+[Fix] human-readable path not displaying on -a|--scan-all default path scan (/home); #407
+[Change] default scoped scan adjusted from /var/www/html to /var/www to make sure we scope all www content; #404
+[Fix] compare md5 on ignore_sigs between monitor mode cycles and only regenerate signatures on file changes; #397
+
 v1.6.4 | Mar 18 2019:
 [New] add quarantine_on_error variable to control quarantine behavior when scanner engines such as ClamAV encounter an error
 [New] add support for slack alerts; pr #240 mostafahussein

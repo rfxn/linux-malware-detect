@@ -1575,8 +1575,18 @@ monitor_cycle() {
 		fi
 		sleep $inotify_sleep
 		inotify_cycle_runtime=$[inotify_sleep+inotify_cycle_runtime]
-		sigignore 1
-		gensigs
+
+		if [ -f "$ignore_sigs" ]; then
+			ignore_sigs_current_md5=`md5sum $ignore_sigs | awk '{print$1}'`
+			if [ ! "$ignore_sigs_current_md5" == "$ignore_sigs_last_md5" ]; then
+				sigignore 1
+				gensigs
+				ignore_sigs_current_md5=`md5sum $ignore_sigs | awk '{print$1}'`
+	                        eout "{mon} regenerated signature files on ignore_sigs file change detected" 1
+			fi
+			ignore_sigs_last_md5="$ignore_sigs_current_md5"
+		fi
+
 		if [ "$scan_clamscan" == "1" ]; then
 			monitor_mode=1
 			clamselector

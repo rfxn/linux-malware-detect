@@ -220,6 +220,7 @@ else
 				hrspath="$1"
 				if [ "$spath" == "" ]; then
 					spath=/home
+					hrspath="$spath"
 				fi
 				if [ "$set_background" == "1" ]; then
 					eout "{scan} launching scan of $spath to background, see $maldet_log for progress" 1
