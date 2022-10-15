@@ -308,12 +308,19 @@ string_length="150000"		# [ max string length ]
 # TCPSocket3310
 # TCPAddr clamd.example.com
 #
+#
+# Enable connecting to a remote clamd service to conduct all file scanning
+# offload from local system. This requires that clamdscan binary be available
+# to the local system.
+# [ 0 = disabled, 1 = enabled ]
+scan_clamd_remote="0"
+
 # To instruct maldetect to use that config, enter the path to that file:
-remote_clamd="/etc/clamd.d/clamd.remote.conf"
+remote_clamd_config="/etc/clamd.d/clamd.remote.conf"
 
 # If remote clamd doesn't respond properly, how many times should we retry
 # the same file
-max_retry="5"
+remote_clamd_max_retry="5"
 
 # How many seconds to sleep between retrys
-retry_sleep="3"
+remote_clamd_retry_sleep="3"

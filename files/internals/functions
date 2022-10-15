@@ -913,10 +913,10 @@ clamselector() {
 
                 isclamd=`pgrep -x clamd 2> /dev/null`
                 isclamd_root=`pgrep -x -u root clamd 2> /dev/null`
-                if [ "$remote_clamd" ]; then
-                       clamd=1
-                       clambin="clamdscan"
-                        clamopts="--fdpass -c $remote_clamd"
+                if [ "$scan_clamd_remote" == "1" ] && [ -f "$remote_clamd_config" ]; then
+			clamd=1
+			clambin="clamdscan"
+			clamopts="--fdpass -c $remote_clamd_config"
                 elif [ "$isclamd" ] && [ "$isclamd_root" ]; then
                         clamd=1
                         clambin="clamdscan"
@@ -944,13 +944,13 @@ clamselector() {
                 fi
                 if [ "$clamd" ] && [ "$scan_clamscan" == "1" ]; then
                         ## test clamdscan for errors as not all 'running' instances of clamd are indicative of working setup
-                        if [ "$remote_clamd" ]; then
+                        if [ "$scan_clamd_remote" == "1" ] && [ -f "$remote_clamd_config" ]; then
                                 try=0
-                                while [ $try -le $max_retry ]; do
+                                while [ $try -le $remote_clamd_max_retry ]; do
                                         clamd_test=`$clamscan $clamopts --fdpass --quiet --no-summary /etc/passwd 2> /dev/null || echo $?`
                                         if [ "$clamd_test" = "2" ]; then
                                                 ((try++))
-                                                sleep $retry_sleep
+                                                sleep $remote_clamd_retry_sleep
                                         else
                                                 break
                                         fi
@@ -1188,15 +1188,15 @@ scan() {
 		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) clamscan start"  >> $clamscan_log
 		clamscan_results="$tmpdir/.clamscan.$$"
 		echo "$(date +"%b %d %Y %H:%M:%S") $(hostname -s) executed: $nice_command $clamscan $clamopts --infected --no-summary -f $find_results" >> $clamscan_log
-                if [ "$remote_clamd" ]; then
+		if [ "$scan_clamd_remote" == "1" ] && [ -f "$remote_clamd_config" ]; then
                         try=0
-                        while [ $try -le $max_retry ]; do
+                        while [ $try -le $remote_clamd_max_retry ]; do
                                 $nice_command $clamscan $clamopts --infected --no-summary -f $find_results > $clamscan_results 2>> $clamscan_log
                                 clamscan_return=$?
                                 if [ "$clamscan_return" == "2" ]; then
                                         ((try++))
                                         echo "$(date +"%b %d %H:%M:%S") $(hostname -s) remote clamd error - retrying in $retry_sleep seconds ($try)"
-                                        sleep $retry_sleep
+                                        sleep $remote_clamd_retry_sleep
                                 else
                                         break
                                 fi
@@ -1656,16 +1656,16 @@ monitor_check() {
 	                clamscan_results="$tmpdir/.clamscan.result.${RANDOM}${RANDOM}"
 			touch $clamscan_results ; chmod 600 $clamscan_results
 	                $nice_command $clamscan $clamopts --infected --no-summary -f $monitor_scanlist > $clamscan_results 2>> $clamscan_log || clamscan_return=$?
-                        if [ "$remote_clamd" ]; then
+                        if [ "$scan_clamd_remote" == "1" ] && [ -f "$remote_clamd_config" ]; then
                                 try=0
-                                while [ $try -le $max_retry ]; do
+                                while [ $try -le $remote_clamd_max_retry ]; do
                                         cleanup_scanlist $monitor_scanlist
                                         $nice_command $clamscan $clamopts --infected --no-summary -f $monitor_scanlist > $clamscan_results 2>> $clamscan_log
                                         clamscan_return=$?
                                         if [ "$clamscan_return" == "2" ]; then
                                                 ((try++))
                                                 echo "$(date +"%b %d %H:%M:%S") $(hostname -s) remote clamd error - retrying in $retry_sleep seconds ($try)" >> $clamscan_log
-                                                sleep $retry_sleep
+                                                sleep $remote_clamd_retry_sleep
                                         else
                                                 break
                                         fi
