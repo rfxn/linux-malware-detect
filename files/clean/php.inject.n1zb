@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+export PATH=/sbin:/bin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+# $1 file path, $2 signature name, $3 file owner, $4 file mode, $5 file size (b), $6 file md5sum
+if [ -f "$1" ]; then
+	sed -i -e 's/^<?php $.*=="));?>//' "$1"
+fi

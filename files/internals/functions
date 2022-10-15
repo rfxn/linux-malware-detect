@@ -1656,19 +1656,17 @@ monitor_init() {
 		eout "{mon} could not find inotifywait command, install yum package inotify-tools or download from https://github.com/rvoicilas/inotify-tools/wiki/" 1
 		exit
 	fi
-	
+
+	ksup=0
 	if [ -f "/boot/System.map-$(uname -r)" ]; then
-		ksup=`grep -i inotify_ /boot/System.map-$(uname -r)`
-		if [ -z "$ksup" ]; then
-			eout "{mon} kernel does not support inotify(), aborting." 1
-			exit
-		fi
-	elif [ -f "/boot/config-$(uname -r)" ]; then
+		ksup=`grep inotify_ /boot/System.map-$(uname -r)`
+	fi
+	if [ -f "/boot/config-$(uname -r)" ]; then
 		ksup=`grep -m1 CONFIG_INOTIFY /boot/config-$(uname -r)`
-		if [ -z "$ksup" ]; then
-			eout "{mon} kernel does not support inotify(), aborting." 1
-			exit
-		fi
+	fi
+	if [ -z "$ksup" ]; then
+		eout "{mon} kernel does not support inotify(), aborting." 1
+		exit
 	fi
 	
 	inotify_pid=`pgrep -f inotify.paths.[0-9]+`
