@@ -25,6 +25,24 @@ email_addr="you@domain.com"
 # [0 = disabled, 1 = enabled]
 email_ignore_clean="1"
 
+# Enable user alerts for specific web hosting control panels. If hits are detected,
+# attempt to determine the web hosting control in use, if any. If a control
+# panel is detected, determine the user contact information from the panel's
+# toolset and send an email summary of the detected hits to that user.
+# The list of hits will be limited to files owned by the panel user/account in question.
+# Disabling alerts globally with email_alert will also disable this function.
+email_panel_user_alerts="0"
+
+# The from header that will be set on alerts to control panel users. This should
+# be set by any web hosts that will be supporting the control panel users/accounts 
+# on this server.
+email_panel_from="you@example.com"
+
+# The reply-to header that will be set on alerts to control panel users. This should
+# be set by any web hosts that will be supporting the control panel users/accounts 
+# on this server.
+email_panel_replyto="you@example.com"
+
 # Enable or disable slack alerts, this will upload the scan report as a file
 # into one or more slack channels
 # [0 = disabled, 1 = enabled]

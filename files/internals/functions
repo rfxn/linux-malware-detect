@@ -227,6 +227,71 @@ clean_exit() {
 	rm -f $clamscan_results $find_results $list $runtime_hdb $runtime_hexstrings $runtime_ndb $scan_session $tmpdir/.find_killed.$scanid $tmpdir/.tmp* $tmpdir/.tmpf* $tmpf 0 2> /dev/null
 }
 
+detect_control_panel() {
+	if [[ -d /usr/local/interworx ]]; then
+		iworx_db_ps=$(ps -u iworx | grep iworx-db)
+		iworx_web_ps=$(ps -u iworx-web | grep iworx-web)
+		pex_script=$(readlink -e /usr/local/interworx/bin/listaccounts.pex)
+		siteworx=$(which siteworx)
+
+		# Check that Iworx services are running
+		if [[ -z "$iworx_db_ps" || -z "$iworx_web_ps" ]]; then
+			control_panel="error"
+			eout "{panel} Interworx found, but not running. Panel user alerts will not be sent."
+		# Verify pex script exists and is executable
+		elif ! [[ -x "$pex_script" ]]; then
+			control_panel="error"
+			eout "{panel} Interworx found, but scripts are missing or not executable. Panel user alerts will not be sent."
+		# Ensure /usr/bin/siteworx is executable
+		elif ! [[ -x "$siteworx" ]]; then
+			control_panel="error"
+			eout "{panel} Interworx found, but Siteworx CLI is missing or not executable. Panel user alerts will not be sent."
+		else
+			control_panel="interworx"
+		fi
+	elif [[ -d /usr/local/cpanel ]]; then
+		cpanel_ps=$(ps -u root | grep [c]psrvd)
+		cpapi=$(which cpapi2)
+		apitool=$(readlink -e ${cpapi})
+
+		# Ensure cpanel service is running
+		if [[ -z ${cpanel_ps} ]]; then
+			control_panel="error"
+			eout "{panel} cPanel found, but services are not running. Panel user alerts will not be sent."
+		# Verify apitool is executable
+		elif ! [[ -x ${apitool} ]]; then
+			control_panel="error"
+			eout "{panel} cPanel found, but apitool is missing or not found. Panel user alerts will not be sent."
+		else
+			control_panel="cpanel"
+		fi
+	else
+		control_panel="unknown"
+	fi
+}
+
+get_panel_contacts() {
+	panel="$1"
+	user="$2"
+	contact_emails=""
+	case "$panel" in
+		"cpanel")
+			if [ -f /var/cpanel/users/${user} ]; then
+				contact_emails=$(awk -F '=' '/^CONTACTEMAIL/{print $2}'  /var/cpanel/users/${user} | sed '/^ *$/d' | tr '\n' ',' | sed 's/,$//')
+			else
+				contact_emails=$(cpapi2 --user=herpaderpadoo --output=xml CustInfo contactemails | grep -o 'value>.*</value' | sed -r 's,(</)?value>?,,g;/^$/d' | tr '\n' ',' | sed 's/,$//')
+			fi
+			break
+		;;
+		"interworx")
+			master_domain=$(/usr/local/interworx/bin/listaccounts.pex | grep "${user}" | awk "{print $2}")
+			contact_emails=$(/usr/bin/siteworx -un --login_domain ${master_domain} -c Users -a listUsers -o yaml | awk '/email:/{print $2}' | tr '\n' ',' | sed 's/,$//')
+			break
+		;;
+	esac
+    echo $contact_emails
+}
+
 get_remote_file() {
 	# $1 = URI, $2 = local service identifier, $3 boolean verbose
 	get_uri="$1"
