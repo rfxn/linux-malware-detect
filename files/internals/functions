@@ -1372,6 +1372,8 @@ scan() {
 			genalert file $nsess
 		elif [ "$email_ignore_clean" == "0" ]; then
 			genalert file $nsess
+		elif [ "$email_panel_user_alerts" == "1" ]; then
+			genalert panel $nsess
 		fi
 	fi
 	mv $scan_session $nsess_hits
