@@ -43,6 +43,9 @@ email_panel_from="you@example.com"
 # on this server.
 email_panel_replyto="you@example.com"
 
+# The subject that will be used on alerts to control panel account contacts
+email_panel_alert_subj="maldet alert from $(hostname)"
+
 # Enable or disable slack alerts, this will upload the scan report as a file
 # into one or more slack channels
 # [0 = disabled, 1 = enabled]

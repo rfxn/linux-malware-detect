@@ -33,17 +33,20 @@ email_ignore_clean="1"
 # toolset and send an email summary of the detected hits to that user.
 # The list of hits will be limited to files owned by the panel user/account in question.
 # Disabling alerts globally with email_alert will also disable this function.
-email_panel_user_alerts="0"
+email_panel_user_alerts="$email_panel_user_alerts"
 
 # The from header that will be set on alerts to control panel users. This should
 # be set by any web hosts that will be supporting the control panel users/accounts 
 # on this server.
-email_panel_from="you@example.com"
+email_panel_from="$email_panel_from"
 
 # The reply-to header that will be set on alerts to control panel users. This should
 # be set by any web hosts that will be supporting the control panel users/accounts 
 # on this server.
-email_panel_replyto="you@example.com"
+email_panel_replyto="$email_panel_replyto"
+
+# The subject that will be used on alerts to control panel account contacts
+email_panel_alert_subj="$email_panel_alert_subj"
 
 # This controls the daily automatic updates of LMD signature files
 # and cleaner rules. The signature update process preserves any
