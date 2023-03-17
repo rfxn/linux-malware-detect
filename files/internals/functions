@@ -1370,7 +1370,6 @@ scan() {
 			genalert file $nsess
 		fi
 		if [ "$email_panel_user_alerts" == "1" ]; then
-			eout "{alert} Panel alerts" 1
 			genalert panel $nsess
 		fi
 	fi
