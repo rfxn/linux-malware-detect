@@ -639,7 +639,7 @@ restore() {
 		touch -m --date=@${file_mtime} "$file_path"
                 eout "{restore} quarantined file '$file' restored to '$file_path'" 1
         else
-                eout "{restore} invalid file or could not be found" 1
+                eout "{restore} '$file' is not eligible for restore or could not be found" 1
         fi
 }
 
