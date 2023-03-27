@@ -1,4 +1,4 @@
-v1.6.5 | Oct xx 2022:
+v1.6.5 | Mar 27 2023:
 [Fix] monitor mode white space detection; issue #354
 [Change] event_log/clamscan_log now record year in timestamp; issue #352
 [Change] -p|--purge will now trim the inotify_log; issue #350
@@ -9,6 +9,12 @@ v1.6.5 | Oct xx 2022:
 [Fix] human-readable path not displaying on -a|--scan-all default path scan (/home); #407
 [Change] default scoped scan adjusted from /var/www/html to /var/www to make sure we scope all www content; #404
 [Fix] compare md5 on ignore_sigs between monitor mode cycles and only regenerate signatures on file changes; #397
+[New] add detect_control_panel function to files/internals/functions to determine installed control panel; pr #409
+[New] add get_panel_contacts to files/internals/functions to discover contact emails; pr #409
+[New] add configuration options for From, Subject, Reply-To headers on alert emails; pr #409
+[New] add flag to enable these alerts (requires email_alert to be enabled as well); pr #409
+[New] add internal configuration to set the user alert template location; pr #409
+[New] add a base template that will be used to create emails to control panel contacts; pr #409
 
 v1.6.4 | Mar 18 2019:
 [New] add quarantine_on_error variable to control quarantine behavior when scanner engines such as ClamAV encounter an error

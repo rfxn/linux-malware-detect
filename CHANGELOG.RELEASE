@@ -1,4 +1,4 @@
-v1.6.5 | Oct xx 2022:
+v1.6.5 | Mar 27 2023:
 [Fix] monitor mode white space detection; issue #354
 [Change] event_log/clamscan_log now record year in timestamp; issue #352
 [Change] -p|--purge will now trim the inotify_log; issue #350
@@ -9,42 +9,9 @@ v1.6.5 | Oct xx 2022:
 [Fix] human-readable path not displaying on -a|--scan-all default path scan (/home); #407
 [Change] default scoped scan adjusted from /var/www/html to /var/www to make sure we scope all www content; #404
 [Fix] compare md5 on ignore_sigs between monitor mode cycles and only regenerate signatures on file changes; #397
-
-v1.6.4 | Mar 18 2019:
-[New] add quarantine_on_error variable to control quarantine behavior when scanner engines such as ClamAV encounter an error
-[New] add support for slack alerts; pr #240 mostafahussein
-[New] add ability to disable cron via conf.maldet; issue #260 / pr #300 , #304 sporks5000
-[New] add cleaner rule for php.malware.magentocore_ccskim and an alias of as php_malware_hexinject for associated yara rule
-[Change] update cron.daily for ispmanager5; pr #305 yogsottot
-[Change] normalize variable naming of pr #300 , #304
-[Change] validate cron_daily_scan is set; otherwise default to 1
-[Change] update importconf for cron_daily_scan block
-[Change] don't need "find" if given a file list; pr# 303 sporks5000
-[Change] rename ambiguous internal variables related to user signatures
-[Change] removed clamscan_return code capture from piped logic of clam(d)scan execution; now always capture return code, even on good exits
-[Change] scan results now explicitly exclude any occurrences of files related to 'no reply from clamd' errors
-[Change] add backward compatibility for renamed internals.conf variables
-[Change] removed legacy $verbose tagging at the end of eout() calls
-[Change] modified cleaner rules to set their own PATH scoping
-[Change] file_stat() has been renamed get_filestat to match associated quar_get_filestat function naming
-[Change] get_file_stat() will now grab md5 hash of files to avoid superfluous md5sum calls
-[Change] added inotify elapsed run time to scan report output
-[Change] adjust '-e|--report' output for etime value and spacing
-[Change] force email_ignore_clean=1 to stop the most common email requested issue
-[Fix] hitname not logging to quarantine.hist on manual quarantine run against scanid; issue #319
-[Fix] typo in PR #300; missing '; then' on elif
-[Fix] set default_monitor_mode to resolve issue #311 systemd service passing $default_monitor_mode as a literal string to the service
-[Fix] sad mail/sendmail validation logic, fix issue #316
-[Fix] normalized scan start time output in scan reports when inotify monitoring is used
-[Fix] scan report list summary to always display an etime value, even if null
-[Fix] ad-hoc clean calls from clean_hitlist() was not executing sigignore and gensigs functions causing clean tasks to fail due to missing variables; issue #203
-[Fix] adjust semantics of comma and spaced variables being passed to '-co|--config-option'; pr #298 sporks5000
-[Fix] modified quarantine_hits to force disable if clamdscan explicitly encounters a 'no reply from clamd' fatal error
-[Fix] modified install.sh 'ps' execution to be BSD compliant
-[Fix] clean function was not properly stripping {CAV} and {YARA} prefixes from signature names when executing cleaner rules
-[Fix] clean function was not properly handling signature names with both underscores and periods
-[Fix] refactored clean_hitlist() & clean() functions to resolve pathing errors when cleaning previous session hits; issue #203
-[Fix] ignore_inotify file exist/empty file negative match; issue #330
-[Fix] operator issue cron.daily #331
-[Fix] install.sh $ver required major numbering; renamed to ver_major so that session preservation semantics continue to work
-
+[New] add detect_control_panel function to files/internals/functions to determine installed control panel; pr #409
+[New] add get_panel_contacts to files/internals/functions to discover contact emails; pr #409
+[New] add configuration options for From, Subject, Reply-To headers on alert emails; pr #409
+[New] add flag to enable these alerts (requires email_alert to be enabled as well); pr #409
+[New] add internal configuration to set the user alert template location; pr #409
+[New] add a base template that will be used to create emails to control panel contacts; pr #409

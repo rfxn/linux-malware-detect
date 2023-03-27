@@ -326,7 +326,7 @@ string_length="150000"		# [ max string length ]
 # it instead of the local daemon (which doesn't even need to run). To use
 # this you need to create a 'clamd.remote.conf' with:
 #
-# TCPSocket3310
+# TCPSocket 3310
 # TCPAddr clamd.example.com
 #
 #
