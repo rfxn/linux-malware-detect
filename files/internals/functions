@@ -778,8 +778,8 @@ view_report() {
 
 dump_report() {
 	rid="$1"
-	if [ rid == "" ]; then
-		rid=`cat sessdir/session.last`
+	if [ "$rid" == "" ]; then
+		rid=`cat $sessdir/session.last`
 	fi
 	view_report $rid dump
 }

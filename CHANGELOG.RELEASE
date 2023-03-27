@@ -2,7 +2,7 @@ v1.6.5 | Mar 27 2023:
 [Fix] monitor mode white space detection; issue #354
 [Change] event_log/clamscan_log now record year in timestamp; issue #352
 [Change] -p|--purge will now trim the inotify_log; issue #350
-[New] -D|--dump-report to dump reports to stdout; pr #362
+[New] -E|--dump-report to dump reports to stdout; pr #362
 [Fix] monitor mode will now fail to start if 'ed' is not installed; issue #350
       inotify_log requires in-place inode pruning to prevent exponential growth
 [Fix] inotify kernel support on debian11 checking only System.map; pr #398
