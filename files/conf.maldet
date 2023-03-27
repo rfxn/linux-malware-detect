@@ -307,6 +307,33 @@ inotify_cpulimit="0"
 # and will drown out your 'event_log' file, intended only for debugging purposes.
 inotify_verbose="0"
 
+# Remote clamd support
+# If you're running a dedicated clamd server, you can instruct clamdscan to use
+# it instead of the local daemon (which doesn't even need to run). To use
+# this you need to create a 'clamd.remote.conf' with:
+#
+# TCPSocket 3310
+# TCPAddr clamd.example.com
+#
+# Enable connecting to a remote clamd service to conduct all file scanning
+# offload from local system. This requires that clamdscan binary be available
+# to the local system.
+#
+# Files being scanned are effectively piped to remote daemon, this can be very
+# bandwidth intensive.
+# [ 0 = disabled, 1 = enabled ]
+scan_clamd_remote="0"
+
+# To instruct maldetect to use that config, enter the path to that file:
+remote_clamd_config="/etc/clamd.d/clamd.remote.conf"
+
+# If remote clamd doesn't respond properly, how many times should we retry
+# the same file
+remote_clamd_max_retry="5"
+
+# How many seconds to sleep between retrys
+remote_clamd_retry_sleep="3"
+
 ##
 # [ STATISTICAL ANALYSIS ]
 # This is an EXPERIMENTAL feature and should be used with caution.
@@ -321,27 +348,3 @@ inotify_verbose="0"
 string_length_scan="0"		# [ 0 = disabled, 1 = enabled ]
 string_length="150000"		# [ max string length ]
 
-# Remote clamd support
-# If you're running a dedicated clamd server, you can instruct clamdscan to use
-# it instead of the local daemon (which doesn't even need to run). To use
-# this you need to create a 'clamd.remote.conf' with:
-#
-# TCPSocket 3310
-# TCPAddr clamd.example.com
-#
-#
-# Enable connecting to a remote clamd service to conduct all file scanning
-# offload from local system. This requires that clamdscan binary be available
-# to the local system.
-# [ 0 = disabled, 1 = enabled ]
-scan_clamd_remote="0"
-
-# To instruct maldetect to use that config, enter the path to that file:
-remote_clamd_config="/etc/clamd.d/clamd.remote.conf"
-
-# If remote clamd doesn't respond properly, how many times should we retry
-# the same file
-remote_clamd_max_retry="5"
-
-# How many seconds to sleep between retrys
-remote_clamd_retry_sleep="3"
