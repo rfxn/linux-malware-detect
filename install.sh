@@ -2,8 +2,8 @@
 #
 ##
 # Linux Malware Detect v1.6.5
-#             (C) 2002-2019, R-fx Networks <proj@r-fx.org>
-#             (C) 2019, Ryan MacDonald <ryan@r-fx.org>
+#             (C) 2002-2023, R-fx Networks <proj@r-fx.org>
+#             (C) 2023, Ryan MacDonald <ryan@r-fx.org>
 # This program may be freely redistributed under the terms of the GNU GPL v2
 ##
 #
@@ -129,8 +129,8 @@ ln -fs $logf $inspath/event_log
 $inspath/maldet --alert-daily 2> /dev/null
 
 echo "Linux Malware Detect v$ver"
-echo "            (C) 2002-2019, R-fx Networks <proj@r-fx.org>"
-echo "            (C) 2019, Ryan MacDonald <ryan@r-fx.org>"
+echo "            (C) 2002-2023, R-fx Networks <proj@r-fx.org>"
+echo "            (C) 2023, Ryan MacDonald <ryan@r-fx.org>"
 echo "This program may be freely redistributed under the terms of the GNU GPL"
 echo ""
 echo "installation completed to $inspath"
