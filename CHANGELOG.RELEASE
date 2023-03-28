@@ -15,3 +15,5 @@ v1.6.5 | Mar 27 2023:
 [New] add flag to enable these alerts (requires email_alert to be enabled as well); pr #409
 [New] add internal configuration to set the user alert template location; pr #409
 [New] add a base template that will be used to create emails to control panel contacts; pr #409
+[Change] ambiguous restore error modified to include file name
+[Fix] adjusted ftp.rfxn.com checkout credentials; #390

@@ -2029,8 +2029,8 @@ monitor_init() {
 checkout() {
 	file="$1"
 	host=ftp.rfxn.com
-	user=anonymous
-	passwd=anonymous
+	user=anonymous@rfxn.com
+	passwd=anonymous@rfxn.com
 	upath=incoming
 	
 	cfile="$startdir/$file"
