@@ -162,7 +162,7 @@ prerun() {
 		if [ "$scan_cpulimit" -gt "$max_cpulimit" ]; then
 			scan_cpulimit="0"
 		else
-			nice_command="$cpulimit -l $scan_cpulimit $nice_command"
+			nice_command="$cpulimit -l $scan_cpulimit -- $nice_command"
 		fi
 	fi
 

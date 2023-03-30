@@ -19,3 +19,4 @@ v1.6.5 | Mar 27 2023:
 [Fix] adjusted ftp.rfxn.com checkout credentials; #390
 [Fix] systemd unit file not copying properly; #371, #413
 [Fix] monitor mode dependency failures on 'ed' not properly logging to be captured by unit file; #395
+[Fix] newer versions of cpulimit explicitly enforce the usage of '--' to define where cpulimit options end; #395
