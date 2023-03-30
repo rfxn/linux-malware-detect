@@ -17,3 +17,4 @@ v1.6.5 | Mar 27 2023:
 [New] add a base template that will be used to create emails to control panel contacts; pr #409
 [Change] ambiguous restore error modified to include file name
 [Fix] adjusted ftp.rfxn.com checkout credentials; #390
+[Fix] systemd unit file not copying properly; #371, #413

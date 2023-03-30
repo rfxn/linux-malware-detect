@@ -5,6 +5,7 @@
 # This program may be freely redistributed under the terms of the GNU GPL v2
 ##
 #
+
 lbreakifs() {
 	if [ "$1" == "set" ]; then
                 IFS=$(echo -en "\n\b")
