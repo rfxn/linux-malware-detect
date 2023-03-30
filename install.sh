@@ -92,7 +92,8 @@ if [ "$(uname -s)" != "FreeBSD" ]; then
         then
                 mkdir -p /etc/systemd/system/
                 mkdir -p /usr/lib/systemd/system/
-                cp -af ./files/service/maldet.service /usr/lib/systemd/system/
+                rm -f /usr/lib/systemd/system/maldet.service
+                cp ./files/service/maldet.service /usr/lib/systemd/system/
                 systemctl daemon-reload
                 systemctl enable maldet.service
 	else
