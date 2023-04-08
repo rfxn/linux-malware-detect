@@ -1522,7 +1522,7 @@ genalert() {
 				fi
 			fi
         elif [ "$type" == "panel" ] && [ -f "$file" ]; then 
-	    	eout "{panel} Detecting control panel and sending alerts..." 1
+	    eout "{panel} Detecting control panel and sending alerts..." 1
             control_panel=""
             detect_control_panel
             if [ "$control_panel" == "error" ] || [ "$control_panel" == "unknown" ]; then 
@@ -1552,7 +1552,7 @@ genalert() {
             	# Determine control panel, noop if error or none detected
                 eout "{panel} Detected control panel $control_panel. Will send alerts to control panel account contacts." 1
                 user_list=$(awk '{print $1}' $tmpdir/.panel_alert.hits | sort | uniq)
-				if [ -n "$user_list"]; then
+		if [ -n "$user_list" ]; then
                 	for sys_user in $user_list; do
                 	    contact_emails=""
                 	    get_panel_contacts $control_panel $sys_user
@@ -1581,7 +1581,8 @@ genalert() {
                 	        eout "{panel} No compatible \$sendmail or \$mail binaries found, control panel account alerts disabled."
                 	    fi   
                 	done 
-				fi
+		fi
+		rm -f $tmpdir/.panel_alert.hits $tmpdir/.panel_alert.clean $tmpdir/.${sys_user}.hits $tmpdir/.${sys_user}.clean $tmpf
             fi   
 		elif [ "$type" == "daily" ] || [ "$type" == "digest" ]; then
 			inotify_start_time=`ps -p $(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1) -o lstart= 2> /dev/null`
