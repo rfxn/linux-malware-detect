@@ -284,7 +284,7 @@ get_panel_contacts() {
 		;;
 		"interworx")
 			master_domain=$(/usr/local/interworx/bin/listaccounts.pex | grep "${user}" | awk '{print $2}')
-			contact_emails=$(/usr/bin/siteworx -un --login_domain ${master_domain} -c Users -a listUsers -o yaml | awk '/email:/{print $2}' | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /')
+			contact_emails=$(siteworx -un --login_domain ${master_domain} -c Users -a listUsers -o json | python -c 'import json,sys;data=json.load(sys.stdin);emails=[elem["email"] for elem in data if elem["user_status"] == "active"];print(", ".join(emails))')
 		;;
 	esac
 }
