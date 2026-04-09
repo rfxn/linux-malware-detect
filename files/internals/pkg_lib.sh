@@ -29,7 +29,7 @@
 [[ -n "${_PKG_LIB_LOADED:-}" ]] && return 0 2>/dev/null
 _PKG_LIB_LOADED=1
 # shellcheck disable=SC2034 # version checked by consumers
-PKG_LIB_VERSION="1.0.8"
+PKG_LIB_VERSION="1.0.9"
 
 # Configurable defaults — consuming projects override via environment
 PKG_NO_COLOR="${PKG_NO_COLOR:-0}"
@@ -2455,6 +2455,13 @@ pkg_config_set() {
 #      substitute old value; otherwise keep new default
 #   3. Preserves comments, ordering, whitespace from new template
 #   4. Safe for quoted values, multi-word values, empty values
+# A line is treated as an assignment only when it matches a real shell
+# assignment anchor (^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=). Lines containing
+# `=` or `==` inside conditional expressions (e.g. `[ "$X" = "1" ]`,
+# `[[ "$Y" == "auto" ]]`) are passed through unchanged. Files that assign
+# the same variable in multiple branches (e.g. if/else STATE_MATCH=...)
+# remain unsafe to merge — the last-seen value collapses both branches.
+# Use this function only on flat VAR=value config files.
 # Returns 1 on failure.
 pkg_config_merge() {
 	local old_conf="$1" new_conf="$2" output="$3"
@@ -2502,18 +2509,23 @@ pkg_config_merge() {
 	}
 
 	awk -v oldfile="$old_conf" '
+	# Anchored shell assignment: optional leading whitespace, identifier, "="
+	# Excludes conditional expressions like `[ "$X" = "1" ]` and
+	# `[[ "$Y" == "auto" ]]` which contain `=` but are not assignments.
+	function is_assignment(line,    _ws) {
+		_ws = "^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="
+		return (line ~ _ws)
+	}
 	# First file (old config): collect VAR=value pairs
 	FILENAME == oldfile {
-		# Skip comments and empty lines
+		# Skip comments, empty lines, and non-assignment shell code
 		if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next
-		# Match VAR=value
+		if (!is_assignment($0)) next
 		pos = index($0, "=")
-		if (pos > 0) {
-			varname = substr($0, 1, pos - 1)
-			gsub(/^[[:space:]]+|[[:space:]]+$/, "", varname)
-			val = substr($0, pos + 1)
-			old[varname] = val
-		}
+		varname = substr($0, 1, pos - 1)
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", varname)
+		val = substr($0, pos + 1)
+		old[varname] = val
 		next
 	}
 	# Second file (new template): output with old values merged
@@ -2523,18 +2535,21 @@ pkg_config_merge() {
 			print
 			next
 		}
-		# Check for VAR=value pattern
-		pos = index($0, "=")
-		if (pos > 0) {
-			varname = substr($0, 1, pos - 1)
-			gsub(/^[[:space:]]+|[[:space:]]+$/, "", varname)
-			if (varname in old) {
-				# Substitute old value into new template line
-				print varname "=" old[varname]
-				next
-			}
+		# Non-assignment shell code (conditionals, function bodies, etc.)
+		# passes through verbatim — never reinterpret as VAR=value.
+		if (!is_assignment($0)) {
+			print
+			next
 		}
-		# No match — keep new template line as-is
+		pos = index($0, "=")
+		varname = substr($0, 1, pos - 1)
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", varname)
+		if (varname in old) {
+			# Substitute old value into new template line
+			print varname "=" old[varname]
+			next
+		}
+		# Variable not in old config — keep new template line as-is
 		print
 	}
 	' "$old_conf" "$new_conf" > "$_tmp_output" || {
