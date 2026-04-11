@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# pkg_lib.sh — Shared Packaging & Installer Library 1.0.8
+# pkg_lib.sh — Shared Packaging & Installer Library 1.0.10
 ###
 # Copyright (C) 2002-2026 R-fx Networks <proj@rfxn.com>
 #                         Ryan MacDonald <ryan@rfxn.com>
@@ -29,7 +29,7 @@
 [[ -n "${_PKG_LIB_LOADED:-}" ]] && return 0 2>/dev/null
 _PKG_LIB_LOADED=1
 # shellcheck disable=SC2034 # version checked by consumers
-PKG_LIB_VERSION="1.0.9"
+PKG_LIB_VERSION="1.0.10"
 
 # Configurable defaults — consuming projects override via environment
 PKG_NO_COLOR="${PKG_NO_COLOR:-0}"
@@ -58,16 +58,9 @@ _PKG_PKGMGR_DETECT_DONE=""
 
 _PKG_DEPS_MISSING=0
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Output & Messaging
-# ══════════════════════════════════════════════════════════════════
-
-# _pkg_color_init — detect terminal color support and set color variables
-# Sets _PKG_C_RED, _PKG_C_GREEN, _PKG_C_YELLOW, _PKG_C_BOLD, _PKG_C_RESET.
-# Non-terminal or PKG_NO_COLOR=1 → all empty strings.
-# Cached: only runs once (idempotent on repeated calls).
+# _pkg_color_init — detect terminal color support, populate _PKG_C_* vars
+# Idempotent; non-terminal or PKG_NO_COLOR=1 → all colors empty.
 _pkg_color_init() {
-	# Already initialized — skip
 	[[ -n "$_PKG_COLOR_INIT_DONE" ]] && return 0
 
 	_PKG_COLOR_INIT_DONE=1
@@ -77,17 +70,14 @@ _pkg_color_init() {
 	_PKG_C_BOLD=""
 	_PKG_C_RESET=""
 
-	# Respect PKG_NO_COLOR override
 	if [[ "${PKG_NO_COLOR:-0}" = "1" ]]; then
 		return 0
 	fi
 
-	# Check if stdout is a terminal
 	if [[ ! -t 1 ]]; then
 		return 0
 	fi
 
-	# Check tput color support — graceful fallback if tput unavailable
 	local colors
 	colors=$(tput colors 2>/dev/null) || return 0
 	if [[ "$colors" -ge 8 ]] 2>/dev/null; then
@@ -102,10 +92,6 @@ _pkg_color_init() {
 }
 
 # pkg_header project_name version action — print styled install/uninstall header
-# Arguments:
-#   $1 — project name (e.g., "BFD", "APF")
-#   $2 — version string (e.g., "2.0.1")
-#   $3 — action (e.g., "install", "uninstall", "upgrade")
 pkg_header() {
 	local project="$1" version="$2" action="$3"
 	if [[ -z "$project" ]] || [[ -z "$version" ]]; then
@@ -123,8 +109,7 @@ pkg_header() {
 	return 0
 }
 
-# pkg_info message — print info message with consistent prefix
-# Suppressed when PKG_QUIET=1.
+# pkg_info message — print info message with consistent prefix (suppressed when PKG_QUIET=1)
 pkg_info() {
 	local msg="$1"
 	if [[ "${PKG_QUIET:-0}" = "1" ]]; then
@@ -172,27 +157,17 @@ pkg_section() {
 	return 0
 }
 
-# pkg_item label value — print aligned key: value pair
-# Arguments:
-#   $1 — label (left side)
-#   $2 — value (right side)
+# pkg_item label value — print aligned "label: value" pair
 pkg_item() {
 	local label="$1" value="$2"
 	printf "  %-20s %s\n" "${label}:" "$value"
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: OS & Platform Detection
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_detect_os — detect operating system family, ID, version, and display name
-# Sets: _PKG_OS_FAMILY, _PKG_OS_ID, _PKG_OS_VERSION, _PKG_OS_NAME
-# Detection chain: /etc/os-release → /etc/redhat-release → /etc/debian_version →
-#   /etc/gentoo-release → /etc/slackware-version → uname -s (FreeBSD)
-# Cached: only runs once.
+# pkg_detect_os — populate _PKG_OS_{FAMILY,ID,VERSION,NAME} from /etc probes
+# Detection chain: os-release → redhat-release → debian_version → gentoo-release →
+# slackware-version → uname (FreeBSD). Idempotent.
 pkg_detect_os() {
-	# Already detected — skip
 	[[ -n "$_PKG_OS_DETECT_DONE" ]] && return 0
 	_PKG_OS_DETECT_DONE=1
 
@@ -201,14 +176,11 @@ pkg_detect_os() {
 	_PKG_OS_VERSION=""
 	_PKG_OS_NAME="unknown"
 
-	# Primary: /etc/os-release (modern distros)
 	if [[ -f /etc/os-release ]]; then
 		local line key val
 		while IFS= read -r line; do
-			# Skip comments and blank lines
 			[[ "$line" =~ ^[[:space:]]*# ]] && continue
 			[[ -z "$line" ]] && continue
-			# Parse KEY=VALUE (strip quotes)
 			key="${line%%=*}"
 			val="${line#*=}"
 			val="${val#\"}"
@@ -219,7 +191,6 @@ pkg_detect_os() {
 				ID)         _PKG_OS_ID="$val" ;;
 				VERSION_ID) _PKG_OS_VERSION="$val" ;;
 				ID_LIKE)
-					# Map ID_LIKE to family
 					case "$val" in
 						*rhel*|*centos*|*fedora*) _PKG_OS_FAMILY="rhel" ;;
 						*debian*)                 _PKG_OS_FAMILY="debian" ;;
@@ -229,7 +200,6 @@ pkg_detect_os() {
 			esac
 		done < /etc/os-release
 
-		# Derive family from ID if ID_LIKE did not set it
 		if [[ "$_PKG_OS_FAMILY" = "unknown" ]]; then
 			case "$_PKG_OS_ID" in
 				centos|rhel|rocky|alma|fedora|ol|amzn) _PKG_OS_FAMILY="rhel" ;;
@@ -239,23 +209,19 @@ pkg_detect_os() {
 			esac
 		fi
 
-		# Fallback name
 		if [[ "$_PKG_OS_NAME" = "unknown" ]]; then
 			_PKG_OS_NAME="${_PKG_OS_ID} ${_PKG_OS_VERSION}"
 		fi
 		return 0
 	fi
 
-	# Fallback: /etc/redhat-release
 	if [[ -f /etc/redhat-release ]]; then
 		_PKG_OS_FAMILY="rhel"
 		_PKG_OS_NAME=$(cat /etc/redhat-release 2>/dev/null) || _PKG_OS_NAME="RHEL-family"
-		# Extract version number (first numeric sequence with optional dots)
 		local ver_pat='[0-9]+(\.[0-9]+)*'
 		if [[ "$_PKG_OS_NAME" =~ $ver_pat ]]; then
 			_PKG_OS_VERSION="${BASH_REMATCH[0]}"
 		fi
-		# Extract distro ID
 		local id_lower
 		id_lower=$(echo "$_PKG_OS_NAME" | tr '[:upper:]' '[:lower:]')
 		case "$id_lower" in
@@ -269,7 +235,6 @@ pkg_detect_os() {
 		return 0
 	fi
 
-	# Fallback: /etc/debian_version
 	if [[ -f /etc/debian_version ]]; then
 		_PKG_OS_FAMILY="debian"
 		_PKG_OS_ID="debian"
@@ -278,7 +243,6 @@ pkg_detect_os() {
 		return 0
 	fi
 
-	# Fallback: /etc/gentoo-release
 	if [[ -f /etc/gentoo-release ]]; then
 		_PKG_OS_FAMILY="gentoo"
 		_PKG_OS_ID="gentoo"
@@ -286,7 +250,6 @@ pkg_detect_os() {
 		return 0
 	fi
 
-	# Fallback: /etc/slackware-version
 	if [[ -f /etc/slackware-version ]]; then
 		_PKG_OS_FAMILY="slackware"
 		_PKG_OS_ID="slackware"
@@ -298,7 +261,6 @@ pkg_detect_os() {
 		return 0
 	fi
 
-	# Fallback: uname -s (FreeBSD)
 	local uname_s
 	uname_s=$(uname -s 2>/dev/null) || uname_s=""
 	case "$uname_s" in
@@ -313,24 +275,19 @@ pkg_detect_os() {
 	return 0
 }
 
-# pkg_detect_init — detect init system
-# Sets: _PKG_INIT_SYSTEM (systemd|sysv|upstart|rc.local|unknown)
-# Detection chain: /run/systemd/system dir → /proc/1/comm → rc.local
-# Cached: only runs once.
+# pkg_detect_init — set _PKG_INIT_SYSTEM to systemd|sysv|upstart|rc.local|unknown
+# Idempotent; /proc/1/comm check guarded because CentOS 6 may lack it.
 pkg_detect_init() {
-	# Already detected — skip
 	[[ -n "$_PKG_INIT_DETECT_DONE" ]] && return 0
 	_PKG_INIT_DETECT_DONE=1
 
 	_PKG_INIT_SYSTEM="unknown"
 
-	# systemd: check for /run/systemd/system directory
 	if [[ -d /run/systemd/system ]]; then
 		_PKG_INIT_SYSTEM="systemd"
 		return 0
 	fi
 
-	# Check /proc/1/comm if it exists (may not on CentOS 6)
 	if [[ -f /proc/1/comm ]]; then
 		local pid1_comm
 		pid1_comm=$(cat /proc/1/comm 2>/dev/null) || pid1_comm=""
@@ -344,13 +301,11 @@ pkg_detect_init() {
 		fi
 	fi
 
-	# Fallback: if /etc/init.d exists, likely SysV
 	if [[ -d /etc/init.d ]] || [[ -d /etc/rc.d/init.d ]]; then
 		_PKG_INIT_SYSTEM="sysv"
 		return 0
 	fi
 
-	# Last resort: rc.local
 	if [[ -f /etc/rc.local ]] || [[ -f /etc/rc.d/rc.local ]]; then
 		_PKG_INIT_SYSTEM="rc.local"
 		return 0
@@ -359,11 +314,9 @@ pkg_detect_init() {
 	return 0
 }
 
-# pkg_detect_pkgmgr — detect package manager
-# Sets: _PKG_PKGMGR (dnf|yum|apt|emerge|pkg|slackpkg|unknown)
-# Uses command -v cascade. Cached: only runs once.
+# pkg_detect_pkgmgr — set _PKG_PKGMGR to dnf|yum|apt|emerge|pkg|slackpkg|unknown
+# Idempotent; uses command -v cascade.
 pkg_detect_pkgmgr() {
-	# Already detected — skip
 	[[ -n "$_PKG_PKGMGR_DETECT_DONE" ]] && return 0
 	_PKG_PKGMGR_DETECT_DONE=1
 
@@ -386,31 +339,20 @@ pkg_detect_pkgmgr() {
 	return 0
 }
 
-# pkg_is_systemd — return 0 if systemd is the init system
-# Calls pkg_detect_init if not already done.
+# pkg_is_systemd — return 0 if detected init system is systemd
 pkg_is_systemd() {
 	pkg_detect_init
 	[[ "$_PKG_INIT_SYSTEM" = "systemd" ]]
 }
 
-# pkg_os_family — echo OS family and return 0
-# Calls pkg_detect_os if not already done.
-# Outputs: rhel|debian|gentoo|slackware|freebsd|unknown
+# pkg_os_family — echo detected OS family (rhel|debian|gentoo|slackware|freebsd|unknown)
 pkg_os_family() {
 	pkg_detect_os
 	echo "$_PKG_OS_FAMILY"
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Dependency Checking
-# ══════════════════════════════════════════════════════════════════
-
 # pkg_dep_hint pkg_rpm pkg_deb — print package-manager-specific install command
-# Arguments:
-#   $1 — RPM package name
-#   $2 — DEB package name
-# Uses _PKG_PKGMGR to select the right hint. Calls pkg_detect_pkgmgr if needed.
 pkg_dep_hint() {
 	local pkg_rpm="$1" pkg_deb="$2"
 	pkg_detect_pkgmgr
@@ -429,14 +371,8 @@ pkg_dep_hint() {
 	return 0
 }
 
-# pkg_check_dep binary pkg_rpm pkg_deb level — check a single dependency
-# Arguments:
-#   $1 — binary name to check (via command -v)
-#   $2 — RPM package name (for install hint)
-#   $3 — DEB package name (for install hint)
-#   $4 — level: required|recommended|optional
-# Returns 0 if found, 1 if missing.
-# Side effects: sets _PKG_DEPS_MISSING=1 for required deps.
+# pkg_check_dep binary pkg_rpm pkg_deb level — check one dependency (level=required|recommended|optional)
+# Side effect: sets _PKG_DEPS_MISSING=1 for missing required deps.
 pkg_check_dep() {
 	local binary="$1" pkg_rpm="$2" pkg_deb="$3" level="${4:-required}"
 
@@ -445,12 +381,10 @@ pkg_check_dep() {
 		return 1
 	fi
 
-	# Binary found — pass
 	if command -v "$binary" >/dev/null 2>&1; then
 		return 0
 	fi
 
-	# Binary missing — report based on level
 	local hint
 	hint=$(pkg_dep_hint "$pkg_rpm" "$pkg_deb")
 
@@ -475,13 +409,8 @@ pkg_check_dep() {
 	return 1
 }
 
-# pkg_check_deps prefix — batch check dependencies from parallel arrays
-# Arguments:
-#   $1 — variable name prefix for arrays (e.g., "MY_APP" looks for
-#         ${MY_APP_DEP_BINS[@]}, ${MY_APP_DEP_RPMS[@]},
-#         ${MY_APP_DEP_DEBS[@]}, ${MY_APP_DEP_LEVELS[@]})
-# Returns 0 if all found, 1 if any missing required deps.
-# Uses indirect expansion compatible with bash 4.1.
+# pkg_check_deps prefix — batch check ${prefix}_DEP_{BINS,RPMS,DEBS,LEVELS} parallel arrays
+# Indirect expansion, not declare -n (bash 4.1 compat floor).
 pkg_check_deps() {
 	local prefix="$1"
 
@@ -490,13 +419,12 @@ pkg_check_deps() {
 		return 1
 	fi
 
-	# Build indirect references for bash 4.1 compat (no declare -n)
+	# Indirect expansion via ${!ref} — bash 4.1 compat (no declare -n)
 	local bins_ref="${prefix}_DEP_BINS[@]"
 	local rpms_ref="${prefix}_DEP_RPMS[@]"
 	local debs_ref="${prefix}_DEP_DEBS[@]"
 	local levels_ref="${prefix}_DEP_LEVELS[@]"
 
-	# Copy into local indexed arrays
 	local bins=("${!bins_ref}")
 	local rpms=("${!rpms_ref}")
 	local debs=("${!debs_ref}")
@@ -515,24 +443,12 @@ pkg_check_deps() {
 	return "$any_missing"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Backup & Restore
-# ══════════════════════════════════════════════════════════════════
-
-# Configurable defaults — consuming projects override via environment
 PKG_BACKUP_METHOD="${PKG_BACKUP_METHOD:-move}"
 PKG_BACKUP_SYMLINK="${PKG_BACKUP_SYMLINK:-.bk.last}"
 PKG_BACKUP_PRUNE_DAYS="${PKG_BACKUP_PRUNE_DAYS:-0}"
 
-# pkg_backup install_path [method] — create timestamped backup of install_path
-# Arguments:
-#   $1 — install path to back up (must exist)
-#   $2 — method: "copy" (cp -R, original stays) or "move" (mv, original removed)
-#         Defaults to PKG_BACKUP_METHOD env var (default: move)
-# Backup naming: <install_path>.<DDMMYYYY-EPOCH>
-# Collision safety: appends -N suffix if target already exists.
-# Creates PKG_BACKUP_SYMLINK (default .bk.last) pointing to latest backup.
-# Returns 1 on failure.
+# pkg_backup install_path [method] — timestamped backup (method: copy|move, default PKG_BACKUP_METHOD)
+# Naming <install_path>.<DDMMYYYY-EPOCH>; appends -N on collision; updates PKG_BACKUP_SYMLINK.
 pkg_backup() {
 	local install_path="$1"
 	local method="${2:-${PKG_BACKUP_METHOD}}"
@@ -547,7 +463,6 @@ pkg_backup() {
 		return 1
 	fi
 
-	# Validate method
 	case "$method" in
 		copy|move) ;;
 		*)
@@ -556,13 +471,11 @@ pkg_backup() {
 			;;
 	esac
 
-	# Build timestamp: DDMMYYYY-EPOCH
 	local timestamp
 	timestamp="$(date +%d%m%Y)-$(date +%s)"
 
 	local backup_path="${install_path}.${timestamp}"
 
-	# Collision safety — append -N if target exists
 	if [[ -e "$backup_path" ]]; then
 		local suffix=1
 		while [[ -e "${backup_path}-${suffix}" ]]; do
@@ -571,7 +484,6 @@ pkg_backup() {
 		backup_path="${backup_path}-${suffix}"
 	fi
 
-	# Perform backup
 	local rc=0
 	case "$method" in
 		copy)
@@ -587,7 +499,6 @@ pkg_backup() {
 		return 1
 	fi
 
-	# Update .bk.last symlink (or configured name)
 	local symlink_path
 	symlink_path="$(dirname "$install_path")/${PKG_BACKUP_SYMLINK}"
 	command rm -f "$symlink_path"
@@ -599,9 +510,7 @@ pkg_backup() {
 	return 0
 }
 
-# pkg_backup_exists install_path — return 0 if .bk.last symlink exists
-# Arguments:
-#   $1 — install path (symlink is looked up in its parent directory)
+# pkg_backup_exists install_path — return 0 if PKG_BACKUP_SYMLINK exists in parent dir
 pkg_backup_exists() {
 	local install_path="$1"
 
@@ -615,10 +524,7 @@ pkg_backup_exists() {
 	[[ -L "$symlink_path" ]]
 }
 
-# pkg_backup_path install_path — echo resolved path of .bk.last symlink
-# Arguments:
-#   $1 — install path (symlink is looked up in its parent directory)
-# Returns 1 if symlink does not exist.
+# pkg_backup_path install_path — echo PKG_BACKUP_SYMLINK target (1 if missing)
 pkg_backup_path() {
 	local install_path="$1"
 
@@ -635,7 +541,6 @@ pkg_backup_path() {
 		return 1
 	fi
 
-	# Resolve symlink target
 	local target
 	target=$(readlink "$symlink_path") || {
 		pkg_error "pkg_backup_path: failed to read symlink: ${symlink_path}"
@@ -645,13 +550,8 @@ pkg_backup_path() {
 	return 0
 }
 
-# pkg_backup_prune install_path max_age_days — remove backups older than N days
-# Arguments:
-#   $1 — install path (backups are <install_path>.<timestamp> in parent dir)
-#   $2 — max age in days (0 = no pruning)
-# Removes matching backup directories/files older than max_age_days.
-# Does not remove the .bk.last symlink target.
-# Returns 0 on success, 1 on invalid arguments.
+# pkg_backup_prune install_path max_age_days — remove backups older than N days (0 disables)
+# Preserves the current PKG_BACKUP_SYMLINK target regardless of age.
 pkg_backup_prune() {
 	local install_path="$1"
 	local max_age_days="$2"
@@ -661,14 +561,12 @@ pkg_backup_prune() {
 		return 1
 	fi
 
-	# Validate max_age_days is a non-negative integer
 	local int_pat='^[0-9]+$'
 	if ! [[ "$max_age_days" =~ $int_pat ]]; then
 		pkg_error "pkg_backup_prune: max_age_days must be a positive integer"
 		return 1
 	fi
 
-	# 0 = no pruning
 	if [[ "$max_age_days" -eq 0 ]]; then
 		return 0
 	fi
@@ -678,14 +576,13 @@ pkg_backup_prune() {
 	local base_name
 	base_name="$(basename "$install_path")"
 
-	# Resolve current .bk.last target so we never prune it
+	# Resolve current PKG_BACKUP_SYMLINK target so we never prune it
 	local current_backup=""
 	local symlink_path="${parent_dir}/${PKG_BACKUP_SYMLINK}"
 	if [[ -L "$symlink_path" ]]; then
 		current_backup=$(readlink "$symlink_path" 2>/dev/null) || current_backup=""
 	fi
 
-	# Find backup entries matching the pattern: <base_name>.<digits>-<digits>*
 	local bk_pat="^${base_name}\.[0-9]{8}-[0-9]+"
 	local pruned=0
 	local entry entry_path
@@ -696,12 +593,10 @@ pkg_backup_prune() {
 		fi
 		entry_path="${parent_dir}/${entry}"
 
-		# Skip if this is the current backup target
 		if [[ -n "$current_backup" ]] && [[ "$entry_path" = "$current_backup" ]]; then
 			continue
 		fi
 
-		# Check age using find -maxdepth 0 -mtime
 		if find "$entry_path" -maxdepth 0 -mtime +"$max_age_days" -print 2>/dev/null | read -r _; then
 			command rm -rf "$entry_path"
 			pruned=$((pruned + 1))
@@ -715,13 +610,8 @@ pkg_backup_prune() {
 	return 0
 }
 
-# pkg_restore_files backup_path install_path patterns... — selective file restore
-# Arguments:
-#   $1 — backup path (source directory)
-#   $2 — install path (destination directory)
-#   $3+ — glob patterns to restore (e.g., "conf.*" "*.rules")
-# Copies matching files from backup to install path, preserving attributes.
-# Returns 1 on failure.
+# pkg_restore_files backup_path install_path patterns... — selective file restore via find -name
+# Preserves attributes and recreates parent directories. Returns 1 if no files matched.
 pkg_restore_files() {
 	local backup_path="$1"
 	local install_path="$2"
@@ -742,7 +632,6 @@ pkg_restore_files() {
 		return 1
 	fi
 
-	# Create install path if it does not exist
 	if [[ ! -d "$install_path" ]]; then
 		mkdir -p "$install_path" || {
 			pkg_error "pkg_restore_files: failed to create ${install_path}"
@@ -752,16 +641,13 @@ pkg_restore_files() {
 
 	local pattern restored=0 rc
 	for pattern in "$@"; do
-		# Use find with -name for each pattern (avoids glob expansion issues)
 		while IFS= read -r match; do
 			[[ -z "$match" ]] && continue
-			# Compute relative path from backup_path
 			local relpath="${match#"${backup_path}"/}"
 			local dest="${install_path}/${relpath}"
 			local dest_dir
 			dest_dir="$(dirname "$dest")"
 
-			# Ensure destination directory exists
 			if [[ ! -d "$dest_dir" ]]; then
 				mkdir -p "$dest_dir" || continue
 			fi
@@ -785,13 +671,7 @@ pkg_restore_files() {
 	return 0
 }
 
-# pkg_restore_dir backup_path install_path subdir — restore entire subdirectory
-# Arguments:
-#   $1 — backup path (source root)
-#   $2 — install path (destination root)
-#   $3 — subdirectory name to restore (relative to backup/install)
-# Copies the entire subdirectory from backup to install path.
-# Returns 1 on failure.
+# pkg_restore_dir backup_path install_path subdir — restore entire subdirectory (creates parents)
 pkg_restore_dir() {
 	local backup_path="$1"
 	local install_path="$2"
@@ -813,7 +693,6 @@ pkg_restore_dir() {
 	local dest_parent
 	dest_parent="$(dirname "$dest")"
 
-	# Ensure destination parent directory exists
 	if [[ ! -d "$dest_parent" ]]; then
 		mkdir -p "$dest_parent" || {
 			pkg_error "pkg_restore_dir: failed to create ${dest_parent}"
@@ -830,16 +709,7 @@ pkg_restore_dir() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: File Operations
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_copy_tree src_dir dest_dir — recursive copy with attribute preservation
-# Arguments:
-#   $1 — source directory
-#   $2 — destination directory
-# Uses cp -pR to preserve ownership, permissions, timestamps.
-# Returns 1 on failure.
+# pkg_copy_tree src_dir dest_dir — recursive copy preserving ownership, perms, timestamps
 pkg_copy_tree() {
 	local src_dir="$1"
 	local dest_dir="$2"
@@ -854,7 +724,6 @@ pkg_copy_tree() {
 		return 1
 	fi
 
-	# Create destination if it does not exist
 	if [[ ! -d "$dest_dir" ]]; then
 		mkdir -p "$dest_dir" || {
 			pkg_error "pkg_copy_tree: failed to create ${dest_dir}"
@@ -870,14 +739,8 @@ pkg_copy_tree() {
 	return 0
 }
 
-# pkg_set_perms path dir_mode file_mode [exec_files...] — set permissions
-# Arguments:
-#   $1 — base path to set permissions on
-#   $2 — mode for directories (e.g., "750")
-#   $3 — mode for regular files (e.g., "640")
-#   $4+ — executable files (relative to path) to set to exec_mode (same as dir_mode)
-# Sets directory permissions, then file permissions, then executable overrides.
-# Returns 1 on failure.
+# pkg_set_perms path dir_mode file_mode [exec_files...] — apply dir then file then exec mode
+# Each exec_file (relative to path) is chmodded to dir_mode (typical exec bits).
 pkg_set_perms() {
 	local base_path="$1"
 	local dir_mode="$2"
@@ -894,13 +757,10 @@ pkg_set_perms() {
 		return 1
 	fi
 
-	# Set directory permissions
 	find "$base_path" -type d -exec chmod "$dir_mode" {} + 2>/dev/null  # best-effort: traversal errors on restricted dirs safe to ignore
 
-	# Set regular file permissions
 	find "$base_path" -type f -exec chmod "$file_mode" {} + 2>/dev/null  # best-effort: traversal errors on restricted dirs safe to ignore
 
-	# Override executable files (use dir_mode as executable mode)
 	local exec_file
 	for exec_file in "$@"; do
 		local full_path="${base_path}/${exec_file}"
@@ -914,11 +774,7 @@ pkg_set_perms() {
 	return 0
 }
 
-# pkg_create_dirs mode dirs... — create directories with specified mode
-# Arguments:
-#   $1 — mode (e.g., "750")
-#   $2+ — directory paths to create
-# Returns 1 if any creation fails.
+# pkg_create_dirs mode dirs... — mkdir -p each dir then chmod mode (1 if any creation fails)
 pkg_create_dirs() {
 	local mode="$1"
 	shift
@@ -945,12 +801,8 @@ pkg_create_dirs() {
 	return "$rc"
 }
 
-# pkg_symlink target link_path — create or update a symbolic link
-# Arguments:
-#   $1 — target (what the link points to)
-#   $2 — link path (the symlink to create)
-# Removes existing link/file at link_path before creating.
-# Returns 1 on failure.
+# pkg_symlink target link_path — atomic create/update of a symlink
+# Uses ln -sfn: single syscall (reduced TOCTOU) and -n avoids the ln -sf follow-into-dir gotcha.
 pkg_symlink() {
 	local target="$1"
 	local link_path="$2"
@@ -960,8 +812,6 @@ pkg_symlink() {
 		return 1
 	fi
 
-	# Reduced TOCTOU: ln -sfn replaces rm+ln with a single coreutils call
-	# -n prevents following existing symlink-to-directory (classic ln -sf gotcha)
 	command ln -sfn "$target" "$link_path" || {
 		pkg_error "pkg_symlink: failed to create symlink ${link_path} -> ${target}"
 		return 1
@@ -970,11 +820,7 @@ pkg_symlink() {
 	return 0
 }
 
-# pkg_symlink_cleanup link_paths... — remove symlinks only (safety: skip non-symlinks)
-# Arguments:
-#   $1+ — symlink paths to remove
-# Silently skips paths that are not symlinks (safety measure).
-# Returns 0 always.
+# pkg_symlink_cleanup link_paths... — rm only symlinks, warn on non-symlinks, return 0
 pkg_symlink_cleanup() {
 	if [[ $# -eq 0 ]]; then
 		pkg_error "pkg_symlink_cleanup: at least one link path required"
@@ -993,13 +839,8 @@ pkg_symlink_cleanup() {
 	return 0
 }
 
-# pkg_sed_replace old_path new_path files... — sed -i path replacement across files
-# Arguments:
-#   $1 — old path string to replace
-#   $2 — new path string to substitute
-#   $3+ — files to perform replacement on
-# Uses '|' as sed delimiter to avoid conflicts with path separators.
-# Returns 1 if no files provided.
+# pkg_sed_replace old_path new_path files... — sed -i across files with '|' delimiter
+# Escapes old_path for BRE and new_path for replacement; missing files are skipped with warning.
 pkg_sed_replace() {
 	local old_path="$1"
 	local new_path="$2"
@@ -1015,8 +856,7 @@ pkg_sed_replace() {
 		return 1
 	fi
 
-	# Escape old_path for BRE search: .*[\^$&|/\ must be escaped
-	# Escape new_path for sed replacement: &|/\ only
+	# BRE escape for search (.*[\^$&|/\); replacement escape for &|/\ only
 	local esc_old esc_new
 	esc_old=$(printf '%s' "$old_path" | sed 's/[.*[\^$&|/\\]/\\&/g')
 	esc_new=$(printf '%s' "$new_path" | sed 's/[&|/\\]/\\&/g')
@@ -1035,11 +875,7 @@ pkg_sed_replace() {
 	return 0
 }
 
-# pkg_tmpfile [template] — mktemp wrapper with default template
-# Arguments:
-#   $1 — optional mktemp template (default: pkg_lib.XXXXXXXXXX)
-# Creates temp file in PKG_TMPDIR. Echoes path to stdout.
-# Returns 1 on failure.
+# pkg_tmpfile [template] — mktemp wrapper in PKG_TMPDIR (default template pkg_lib.XXXXXXXXXX)
 pkg_tmpfile() {
 	local template="${1:-pkg_lib.XXXXXXXXXX}"
 
@@ -1053,11 +889,6 @@ pkg_tmpfile() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Service Lifecycle
-# ══════════════════════════════════════════════════════════════════
-
-# --- Environment defaults ---
 PKG_CHKCONFIG_LEVELS="${PKG_CHKCONFIG_LEVELS:-345}"
 PKG_UPDATERCD_START="${PKG_UPDATERCD_START:-95}"
 PKG_UPDATERCD_STOP="${PKG_UPDATERCD_STOP:-05}"
@@ -1068,19 +899,13 @@ PKG_SLACKWARE_PRIORITY="${PKG_SLACKWARE_PRIORITY:-95}"
 # Private: rc.local search paths (override in tests)
 _PKG_RCLOCAL_PATHS="${_PKG_RCLOCAL_PATHS:-/etc/rc.local /etc/rc.d/rc.local}"
 
-# --- Internal helpers ---
-
-# _pkg_systemd_unit_dir — resolve systemd unit directory
-# Priority: PKG_SYSTEMD_UNIT_DIR env var → /usr/lib/systemd/system → /lib/systemd/system
-# Returns 1 if no directory found.
+# _pkg_systemd_unit_dir — echo systemd unit dir (env → /usr/lib → /lib, else 1)
 _pkg_systemd_unit_dir() {
-	# Env var override
 	if [[ -n "$PKG_SYSTEMD_UNIT_DIR" ]]; then
 		echo "$PKG_SYSTEMD_UNIT_DIR"
 		return 0
 	fi
 
-	# Auto-detect: RHEL-family first, then Debian-family
 	if [[ -d /usr/lib/systemd/system ]]; then
 		echo "/usr/lib/systemd/system"
 		return 0
@@ -1093,11 +918,7 @@ _pkg_systemd_unit_dir() {
 	return 1
 }
 
-# _pkg_init_script_path name — resolve SysV init script path
-# Arguments:
-#   $1 — service name
-# Checks /etc/rc.d/init.d/$name then /etc/init.d/$name.
-# Returns 1 if neither exists.
+# _pkg_init_script_path name — echo SysV init script path (/etc/rc.d/init.d then /etc/init.d)
 _pkg_init_script_path() {
 	local name="$1"
 
@@ -1113,22 +934,15 @@ _pkg_init_script_path() {
 	return 1
 }
 
-# _pkg_service_ctl action name — shared start/stop/restart cascade
-# Arguments:
-#   $1 — action (start|stop|restart)
-#   $2 — service name
-# Cascade: systemd → SysV init script → error
-# Returns 1 if no init method found.
+# _pkg_service_ctl action name — shared start/stop/restart cascade (systemd → SysV → error)
 _pkg_service_ctl() {
 	local action="$1" name="$2"
 
-	# systemd path
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl "$action" "$name" 2>/dev/null  # may fail if unit missing
 		return $?
 	fi
 
-	# SysV path
 	local init_script
 	if init_script=$(_pkg_init_script_path "$name"); then
 		"$init_script" "$action"
@@ -1139,16 +953,8 @@ _pkg_service_ctl() {
 	return 1
 }
 
-# --- Service install/uninstall ---
-
-# pkg_service_install name source_file — install unit or init script
-# Arguments:
-#   $1 — service name
-#   $2 — source file path (unit file or init script)
-# Copies to correct location based on detected init system.
-# For systemd: copies to unit dir, runs daemon-reload.
-# For SysV: copies to init.d, chmod 755.
-# Returns 1 on failure.
+# pkg_service_install name source_file — install unit or init script routed by detected init
+# systemd → copy to unit dir + daemon-reload; SysV → copy to init.d + chmod 755.
 pkg_service_install() {
 	local name="$1" source_file="$2"
 
@@ -1157,7 +963,6 @@ pkg_service_install() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1187,7 +992,6 @@ pkg_service_install() {
 		return 0
 	fi
 
-	# SysV: determine init.d directory
 	local init_dir="/etc/init.d"
 	if [[ -d /etc/rc.d/init.d ]]; then
 		init_dir="/etc/rc.d/init.d"
@@ -1201,12 +1005,8 @@ pkg_service_install() {
 	return 0
 }
 
-# pkg_service_uninstall name — exhaustive removal from ALL locations
-# Arguments:
-#   $1 — service name
-# Removes unit files, init scripts, chkconfig entries, update-rc.d entries,
-# rc-update entries, Slackware S-links, and rc.local entries.
-# Returns 0 always (best-effort cleanup).
+# pkg_service_uninstall name — exhaustive best-effort removal from all init locations
+# Covers systemd units, SysV scripts, chkconfig, update-rc.d, rc-update, Slackware links, rc.local.
 pkg_service_uninstall() {
 	local name="$1"
 
@@ -1215,14 +1015,12 @@ pkg_service_uninstall() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
 		return 1
 	fi
 
-	# 1. systemd: stop + disable + remove unit files + daemon-reload
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl stop "$name" 2>/dev/null     # safe: ignore if not running
 		systemctl disable "$name" 2>/dev/null   # safe: ignore if not enabled
@@ -1237,32 +1035,26 @@ pkg_service_uninstall() {
 		systemctl daemon-reload 2>/dev/null  # safe: refresh after removal
 	fi
 
-	# 2. SysV: stop via init script if exists
 	local init_script
 	if init_script=$(_pkg_init_script_path "$name"); then
 		"$init_script" stop 2>/dev/null  # safe: ignore if already stopped
 	fi
 
-	# 3. chkconfig: permanent removal
 	if command -v chkconfig >/dev/null 2>&1; then
 		chkconfig --del "$name" 2>/dev/null  # safe: ignore if not registered
 	fi
 
-	# 4. update-rc.d: remove
 	if command -v update-rc.d >/dev/null 2>&1; then
 		update-rc.d -f "$name" remove 2>/dev/null  # safe: ignore if not registered
 	fi
 
-	# 5. rc-update: remove (Gentoo)
 	if command -v rc-update >/dev/null 2>&1; then
 		rc-update del "$name" default 2>/dev/null  # safe: ignore if not registered
 	fi
 
-	# 6. Remove init scripts from both possible locations
 	command rm -f "/etc/init.d/${name}" 2>/dev/null          # safe: may not exist
 	command rm -f "/etc/rc.d/init.d/${name}" 2>/dev/null     # safe: may not exist
 
-	# 7. Slackware S-links
 	local rl rc_dir
 	for rl in 2 3 4 5; do
 		rc_dir="/etc/rc.d/rc${rl}.d"
@@ -1271,17 +1063,12 @@ pkg_service_uninstall() {
 		fi
 	done
 
-	# 8. rc.local cleanup
 	pkg_rclocal_remove "$name"
 
 	return 0
 }
 
-# pkg_service_install_timer name source_file — install systemd timer unit
-# Arguments:
-#   $1 — timer name (without .timer suffix)
-#   $2 — source timer file path
-# Returns 1 if not systemd or on failure.
+# pkg_service_install_timer name source_file — install a systemd timer unit (requires systemd)
 pkg_service_install_timer() {
 	local name="$1" source_file="$2"
 
@@ -1290,7 +1077,6 @@ pkg_service_install_timer() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1326,12 +1112,7 @@ pkg_service_install_timer() {
 	return 0
 }
 
-# pkg_service_install_multi name source_files... — install multiple related units
-# Arguments:
-#   $1 — service name (for logging)
-#   $2+ — source file paths (service, timer, path units, etc.)
-# Installs each file via pkg_service_install or pkg_service_install_timer
-# based on file extension. Returns 1 if any install fails.
+# pkg_service_install_multi name source_files... — install multiple units; routes .timer to _install_timer
 pkg_service_install_multi() {
 	local name="$1"
 	shift
@@ -1341,7 +1122,6 @@ pkg_service_install_multi() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1361,12 +1141,8 @@ pkg_service_install_multi() {
 	return "$rc"
 }
 
-# pkg_service_uninstall_multi name suffixes... — uninstall multiple related units
-# Arguments:
-#   $1 — service name
-#   $2+ — unit suffixes to remove (e.g., ".service" ".timer" ".path")
-# Removes each unit file from all systemd unit dirs and runs daemon-reload once.
-# Returns 0 always (best-effort cleanup).
+# pkg_service_uninstall_multi name suffixes... — remove each ${name}${suffix} unit from all unit dirs
+# suffixes are like ".service" ".timer" ".path"; runs a single daemon-reload after all removals.
 pkg_service_uninstall_multi() {
 	local name="$1"
 	shift
@@ -1376,7 +1152,6 @@ pkg_service_uninstall_multi() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1385,17 +1160,14 @@ pkg_service_uninstall_multi() {
 
 	local suffix
 	for suffix in "$@"; do
-		# Stop + disable each unit if systemctl available
 		if command -v systemctl >/dev/null 2>&1; then
 			systemctl stop "${name}${suffix}" 2>/dev/null    # safe: may not be running
 			systemctl disable "${name}${suffix}" 2>/dev/null  # safe: may not be enabled
 		fi
-		# Remove from both possible systemd dirs
 		command rm -f "/usr/lib/systemd/system/${name}${suffix}" 2>/dev/null  # safe: may not exist
 		command rm -f "/lib/systemd/system/${name}${suffix}" 2>/dev/null      # safe: may not exist
 	done
 
-	# Single daemon-reload after all removals
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl daemon-reload 2>/dev/null  # safe: refresh after bulk removal
 	fi
@@ -1403,11 +1175,7 @@ pkg_service_uninstall_multi() {
 	return 0
 }
 
-# --- Service control ---
-
 # pkg_service_start name — start service now
-# Arguments:
-#   $1 — service name
 pkg_service_start() {
 	local name="$1"
 
@@ -1416,7 +1184,6 @@ pkg_service_start() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1427,8 +1194,6 @@ pkg_service_start() {
 }
 
 # pkg_service_stop name — stop service now
-# Arguments:
-#   $1 — service name
 pkg_service_stop() {
 	local name="$1"
 
@@ -1437,7 +1202,6 @@ pkg_service_stop() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1448,8 +1212,6 @@ pkg_service_stop() {
 }
 
 # pkg_service_restart name — restart service now
-# Arguments:
-#   $1 — service name
 pkg_service_restart() {
 	local name="$1"
 
@@ -1458,7 +1220,6 @@ pkg_service_restart() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1468,10 +1229,7 @@ pkg_service_restart() {
 	_pkg_service_ctl "restart" "$name"
 }
 
-# pkg_service_status name — check if service is running
-# Arguments:
-#   $1 — service name
-# Returns 0 if running, 1 if stopped or unknown.
+# pkg_service_status name — check if service is running (0=running, 1=stopped/unknown)
 pkg_service_status() {
 	local name="$1"
 
@@ -1480,20 +1238,17 @@ pkg_service_status() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
 		return 1
 	fi
 
-	# systemd path
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl is-active --quiet "$name" 2>/dev/null  # returns 0=active, non-zero=inactive
 		return $?
 	fi
 
-	# SysV path
 	local init_script
 	if init_script=$(_pkg_init_script_path "$name"); then
 		"$init_script" status >/dev/null 2>&1
@@ -1503,14 +1258,8 @@ pkg_service_status() {
 	return 1
 }
 
-# --- Service configuration ---
-
-# pkg_service_enable name — enable service at boot
-# Arguments:
-#   $1 — service name
-# Cascade: systemd → chkconfig (RHEL) → update-rc.d (Debian) →
-#   rc-update (Gentoo) → Slackware S-links → unsupported
-# Returns 1 on failure.
+# pkg_service_enable name — enable at boot
+# Cascade: systemd → chkconfig (RHEL) → update-rc.d (Debian) → rc-update (Gentoo) → Slackware links.
 pkg_service_enable() {
 	local name="$1"
 
@@ -1519,7 +1268,6 @@ pkg_service_enable() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1528,14 +1276,11 @@ pkg_service_enable() {
 
 	pkg_detect_init
 
-	# 1. systemd
 	if [[ "$_PKG_INIT_SYSTEM" = "systemd" ]]; then
 		systemctl enable "$name" 2>/dev/null  # may fail if unit missing
 		return $?
 	fi
 
-	# OS-family cascades for SysV
-	# 2. RHEL: chkconfig
 	if [[ "$_PKG_OS_FAMILY" = "rhel" ]]; then
 		if command -v chkconfig >/dev/null 2>&1; then
 			chkconfig --add "$name" 2>/dev/null  # safe: may already exist
@@ -1544,7 +1289,6 @@ pkg_service_enable() {
 		fi
 	fi
 
-	# 3. Debian: update-rc.d
 	if [[ "$_PKG_OS_FAMILY" = "debian" ]]; then
 		if command -v update-rc.d >/dev/null 2>&1; then
 			update-rc.d "$name" defaults "$PKG_UPDATERCD_START" "$PKG_UPDATERCD_STOP"
@@ -1552,7 +1296,6 @@ pkg_service_enable() {
 		fi
 	fi
 
-	# 4. Gentoo: rc-update
 	if [[ "$_PKG_OS_FAMILY" = "gentoo" ]]; then
 		if command -v rc-update >/dev/null 2>&1; then
 			rc-update add "$name" default
@@ -1560,7 +1303,6 @@ pkg_service_enable() {
 		fi
 	fi
 
-	# 5. Slackware: manual S-links
 	if [[ "$_PKG_OS_FAMILY" = "slackware" ]]; then
 		local init_script
 		if init_script=$(_pkg_init_script_path "$name"); then
@@ -1577,18 +1319,12 @@ pkg_service_enable() {
 		return 1
 	fi
 
-	# 6. Unsupported
 	pkg_warn "pkg_service_enable: unsupported init system for enable: ${_PKG_INIT_SYSTEM}"
 	return 1
 }
 
-# pkg_service_disable name — disable service at boot (reversible)
-# Arguments:
-#   $1 — service name
-# Cascade: systemd → chkconfig off (RHEL) → update-rc.d disable (Debian) →
-#   rc-update del (Gentoo) → remove Slackware S-links → unsupported
-# Does NOT remove init scripts (use pkg_service_uninstall for that).
-# Returns 1 on failure.
+# pkg_service_disable name — reversible disable (cascade mirrors pkg_service_enable)
+# Does NOT remove init scripts — use pkg_service_uninstall for full removal.
 pkg_service_disable() {
 	local name="$1"
 
@@ -1597,7 +1333,6 @@ pkg_service_disable() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1606,14 +1341,12 @@ pkg_service_disable() {
 
 	pkg_detect_init
 
-	# 1. systemd
 	if [[ "$_PKG_INIT_SYSTEM" = "systemd" ]]; then
 		systemctl disable "$name" 2>/dev/null  # may fail if unit missing
 		return $?
 	fi
 
-	# OS-family cascades for SysV
-	# 2. RHEL: chkconfig off (reversible — not --del)
+	# RHEL: chkconfig off (reversible — not --del)
 	if [[ "$_PKG_OS_FAMILY" = "rhel" ]]; then
 		if command -v chkconfig >/dev/null 2>&1; then
 			chkconfig "$name" off
@@ -1621,7 +1354,6 @@ pkg_service_disable() {
 		fi
 	fi
 
-	# 3. Debian: update-rc.d disable
 	if [[ "$_PKG_OS_FAMILY" = "debian" ]]; then
 		if command -v update-rc.d >/dev/null 2>&1; then
 			update-rc.d "$name" disable
@@ -1629,7 +1361,6 @@ pkg_service_disable() {
 		fi
 	fi
 
-	# 4. Gentoo: rc-update del
 	if [[ "$_PKG_OS_FAMILY" = "gentoo" ]]; then
 		if command -v rc-update >/dev/null 2>&1; then
 			rc-update del "$name" default
@@ -1637,7 +1368,6 @@ pkg_service_disable() {
 		fi
 	fi
 
-	# 5. Slackware: remove S-links from rc.d directories
 	if [[ "$_PKG_OS_FAMILY" = "slackware" ]]; then
 		local rl rc_dir
 		for rl in $PKG_SLACKWARE_RUNLEVELS; do
@@ -1649,15 +1379,11 @@ pkg_service_disable() {
 		return 0
 	fi
 
-	# 6. Unsupported
 	pkg_warn "pkg_service_disable: unsupported init system for disable: ${_PKG_INIT_SYSTEM}"
 	return 1
 }
 
-# pkg_service_exists name — check if unit file or init script is installed
-# Arguments:
-#   $1 — service name
-# Returns 0 if found, 1 if not.
+# pkg_service_exists name — check if unit file or init script is installed (0=yes, 1=no)
 pkg_service_exists() {
 	local name="$1"
 
@@ -1666,14 +1392,12 @@ pkg_service_exists() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
 		return 1
 	fi
 
-	# Check systemd unit dir
 	local unit_dir
 	if unit_dir=$(_pkg_systemd_unit_dir); then
 		if [[ -f "${unit_dir}/${name}.service" ]] || [[ -f "${unit_dir}/${name}.timer" ]]; then
@@ -1681,13 +1405,12 @@ pkg_service_exists() {
 		fi
 	fi
 
-	# Check both systemd dirs explicitly (in case auto-detect picked only one)
+	# Check both systemd dirs explicitly — auto-detect may have picked only one
 	if [[ -f "/usr/lib/systemd/system/${name}.service" ]] || \
 	   [[ -f "/lib/systemd/system/${name}.service" ]]; then
 		return 0
 	fi
 
-	# Check SysV init script
 	if _pkg_init_script_path "$name" >/dev/null 2>&1; then
 		return 0
 	fi
@@ -1695,10 +1418,7 @@ pkg_service_exists() {
 	return 1
 }
 
-# pkg_service_is_enabled name — check if service is enabled at boot
-# Arguments:
-#   $1 — service name
-# Returns 0 if enabled, 1 if not.
+# pkg_service_is_enabled name — check if service is enabled at boot (0=enabled, 1=not)
 pkg_service_is_enabled() {
 	local name="$1"
 
@@ -1707,7 +1427,6 @@ pkg_service_is_enabled() {
 		return 1
 	fi
 
-	# FreeBSD guard
 	pkg_detect_os
 	if [[ "$_PKG_OS_ID" = "freebsd" ]]; then
 		pkg_warn "FreeBSD service management not supported"
@@ -1716,7 +1435,6 @@ pkg_service_is_enabled() {
 
 	pkg_detect_init
 
-	# systemd
 	if [[ "$_PKG_INIT_SYSTEM" = "systemd" ]]; then
 		if command -v systemctl >/dev/null 2>&1; then
 			systemctl is-enabled --quiet "$name" 2>/dev/null
@@ -1725,7 +1443,6 @@ pkg_service_is_enabled() {
 		return 1
 	fi
 
-	# RHEL: chkconfig
 	if [[ "$_PKG_OS_FAMILY" = "rhel" ]]; then
 		if command -v chkconfig >/dev/null 2>&1; then
 			chkconfig "$name" 2>/dev/null  # returns 0 if on
@@ -1733,7 +1450,6 @@ pkg_service_is_enabled() {
 		fi
 	fi
 
-	# Debian: check for S-links in default runlevel dirs
 	if [[ "$_PKG_OS_FAMILY" = "debian" ]]; then
 		local rl rc_dir
 		for rl in 2 3 4 5; do
@@ -1748,7 +1464,6 @@ pkg_service_is_enabled() {
 		return 1
 	fi
 
-	# Gentoo: rc-update show
 	if [[ "$_PKG_OS_FAMILY" = "gentoo" ]]; then
 		if command -v rc-update >/dev/null 2>&1; then
 			rc-update show default 2>/dev/null | grep -q "$name"
@@ -1756,7 +1471,6 @@ pkg_service_is_enabled() {
 		fi
 	fi
 
-	# Slackware: check for S-links
 	if [[ "$_PKG_OS_FAMILY" = "slackware" ]]; then
 		local rl rc_dir
 		for rl in $PKG_SLACKWARE_RUNLEVELS; do
@@ -1774,14 +1488,8 @@ pkg_service_is_enabled() {
 	return 1
 }
 
-# --- rc.local management ---
-
-# pkg_rclocal_add entry — add line to rc.local (idempotent)
-# Arguments:
-#   $1 — line to add to rc.local
-# Creates rc.local with #!/bin/bash header and chmod 755 if missing.
-# Checks all paths in _PKG_RCLOCAL_PATHS; adds to first existing (or creates first).
-# Returns 1 on failure.
+# pkg_rclocal_add entry — idempotent add to first _PKG_RCLOCAL_PATHS entry (creates if missing)
+# New file gets #!/bin/bash header and 0755 mode.
 pkg_rclocal_add() {
 	local entry="$1"
 
@@ -1790,7 +1498,6 @@ pkg_rclocal_add() {
 		return 1
 	fi
 
-	# Find first existing rc.local, or use first path in list
 	local rclocal="" path first_path=""
 	for path in $_PKG_RCLOCAL_PATHS; do
 		if [[ -z "$first_path" ]]; then
@@ -1809,7 +1516,6 @@ pkg_rclocal_add() {
 			pkg_error "pkg_rclocal_add: no rc.local paths configured"
 			return 1
 		fi
-		# Ensure parent directory exists
 		local rclocal_dir
 		rclocal_dir=$(dirname "$rclocal")
 		if [[ ! -d "$rclocal_dir" ]]; then
@@ -1825,12 +1531,10 @@ pkg_rclocal_add() {
 		chmod 755 "$rclocal"
 	fi
 
-	# Idempotency: check if entry already present
 	if grep -qF "$entry" "$rclocal" 2>/dev/null; then
 		return 0
 	fi
 
-	# Append entry
 	printf '%s\n' "$entry" >> "$rclocal" || {
 		pkg_error "pkg_rclocal_add: failed to append to ${rclocal}"
 		return 1
@@ -1839,11 +1543,8 @@ pkg_rclocal_add() {
 	return 0
 }
 
-# pkg_rclocal_remove pattern — remove matching lines from rc.local
-# Arguments:
-#   $1 — grep pattern to match lines for removal
-# Uses grep -v + atomic replace (mktemp + mv) across all rc.local paths.
-# Returns 0 always (best-effort cleanup).
+# pkg_rclocal_remove pattern — strip matching lines from every _PKG_RCLOCAL_PATHS entry
+# Atomic replace via grep -v + mktemp + mv; original file mode preserved.
 pkg_rclocal_remove() {
 	local pattern="$1"
 
@@ -1858,18 +1559,16 @@ pkg_rclocal_remove() {
 			continue
 		fi
 
-		# Check if pattern exists before modifying (fixed-string match)
 		if ! grep -qF "$pattern" "$path" 2>/dev/null; then
 			continue
 		fi
 
-		# Preserve original permissions before atomic replace
+		# GNU stat for Linux, BSD stat for FreeBSD; 755 fallback if both fail
 		local _orig_mode
 		_orig_mode=$(command stat -Lc '%a' "$path" 2>/dev/null) || \
 			_orig_mode=$(command stat -Lf '%OLp' "$path" 2>/dev/null) || \
 			_orig_mode="755"
 
-		# Atomic replace: grep -v to tmpfile, then mv
 		local tmpfile
 		tmpfile=$(mktemp "${PKG_TMPDIR}/rclocal.XXXXXXXXXX") || {
 			pkg_warn "pkg_rclocal_remove: mktemp failed for ${path}"
@@ -1882,7 +1581,7 @@ pkg_rclocal_remove() {
 			continue
 		}
 
-		# Restore original permissions (mktemp creates 0600; rc.local needs 755)
+		# Restore mode: mktemp creates 0600 but rc.local needs its original perms
 		command chmod "$_orig_mode" "$path" || \
 			pkg_warn "pkg_rclocal_remove: failed to restore permissions on ${path}"
 	done
@@ -1890,18 +1589,8 @@ pkg_rclocal_remove() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Cron Management
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_cron_install src dest [mode] — install cron file with correct permissions
-# Arguments:
-#   $1 — source file path
-#   $2 — destination path (e.g., /etc/cron.d/myapp or /etc/cron.daily/myapp)
-#   $3 — optional mode (default: auto-detect from dest path —
-#         644 for cron.d, 755 for cron.daily/hourly/weekly/monthly)
-# Creates destination directory if missing.
-# Returns 1 on failure.
+# pkg_cron_install src dest [mode] — install cron file, auto-mode from dest when omitted
+# Auto: 755 for cron.{daily,hourly,weekly,monthly} (executed); 644 elsewhere (cron.d tables).
 pkg_cron_install() {
 	local src="$1" dest="$2" mode="${3:-}"
 
@@ -1915,7 +1604,6 @@ pkg_cron_install() {
 		return 1
 	fi
 
-	# Auto-detect mode from destination path if not specified
 	if [[ -z "$mode" ]]; then
 		local cron_exec_pat='cron\.(daily|hourly|weekly|monthly)'
 		if [[ "$dest" =~ $cron_exec_pat ]]; then
@@ -1925,7 +1613,6 @@ pkg_cron_install() {
 		fi
 	fi
 
-	# Ensure destination directory exists
 	local dest_dir
 	dest_dir=$(dirname "$dest")
 	if [[ ! -d "$dest_dir" ]]; then
@@ -1948,11 +1635,7 @@ pkg_cron_install() {
 	return 0
 }
 
-# pkg_cron_remove paths... — remove cron files
-# Arguments:
-#   $1+ — cron file paths to remove
-# Best-effort removal; warns on failure.
-# Returns 0 always.
+# pkg_cron_remove paths... — best-effort removal, warns on failure
 pkg_cron_remove() {
 	if [[ $# -eq 0 ]]; then
 		pkg_error "pkg_cron_remove: at least one path required"
@@ -1969,11 +1652,7 @@ pkg_cron_remove() {
 	return 0
 }
 
-# pkg_cron_cleanup_legacy patterns... — remove old/legacy cron files by path patterns
-# Arguments:
-#   $1+ — glob patterns to match legacy cron files (e.g., "/etc/cron.d/old_*")
-# Each argument is expanded as a glob. Matching files are removed.
-# Returns 0 always (best-effort cleanup).
+# pkg_cron_cleanup_legacy patterns... — expand each arg as a glob and remove matches
 pkg_cron_cleanup_legacy() {
 	if [[ $# -eq 0 ]]; then
 		pkg_error "pkg_cron_cleanup_legacy: at least one pattern required"
@@ -1982,7 +1661,6 @@ pkg_cron_cleanup_legacy() {
 
 	local pattern path
 	for pattern in "$@"; do
-		# Expand glob — no-op if pattern matches nothing
 		for path in $pattern; do
 			if [[ -f "$path" ]]; then
 				command rm -f "$path" || pkg_warn "pkg_cron_cleanup_legacy: failed to remove ${path}"
@@ -1993,10 +1671,8 @@ pkg_cron_cleanup_legacy() {
 	return 0
 }
 
-# _pkg_cron_read_schedule cron_file — echo the 5-field schedule from first cron line
-# Internal helper: reads cron_file, skips comments, empty lines, and variable
-# assignments, extracts the first 5 whitespace-delimited fields (cron schedule).
-# Echoes the schedule string; returns 1 if no schedule found.
+# _pkg_cron_read_schedule cron_file — echo the first 5 fields of the first cron line
+# Skips comments, blank lines, and VAR=value assignments. Returns 1 if no schedule line found.
 _pkg_cron_read_schedule() {
 	local cron_file="$1"
 	local line schedule=""
@@ -2004,15 +1680,12 @@ _pkg_cron_read_schedule() {
 	local assign_pat='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*='
 
 	while IFS= read -r line; do
-		# Skip comments and empty lines
 		if [[ "$line" =~ $comment_pat ]]; then
 			continue
 		fi
-		# Skip variable assignments (VAR=value)
 		if [[ "$line" =~ $assign_pat ]]; then
 			continue
 		fi
-		# Extract first 5 whitespace-delimited fields (cron schedule)
 		schedule=$(echo "$line" | awk '{print $1, $2, $3, $4, $5}')
 		if [[ -n "$schedule" ]]; then
 			break
@@ -2027,13 +1700,8 @@ _pkg_cron_read_schedule() {
 	return 0
 }
 
-# pkg_cron_preserve_schedule cron_file var_name — capture existing schedule
-# Arguments:
-#   $1 — cron file path
-#   $2 — variable name to store the schedule line
-# Reads the first non-comment, non-empty line from cron_file and extracts
-# the first 5 fields (schedule). Exports the result in the named variable.
-# Returns 1 if cron_file not found or no schedule found.
+# pkg_cron_preserve_schedule cron_file var_name — capture first cron schedule into named var
+# var_name is validated as a safe shell identifier before eval assignment.
 pkg_cron_preserve_schedule() {
 	local cron_file="$1" var_name="$2"
 
@@ -2046,7 +1714,6 @@ pkg_cron_preserve_schedule() {
 		return 1
 	fi
 
-	# Validate var_name is a safe shell identifier before eval
 	local valid_ident='^[A-Za-z_][A-Za-z0-9_]*$'
 	if ! [[ "$var_name" =~ $valid_ident ]]; then
 		pkg_error "pkg_cron_preserve_schedule: invalid variable name: ${var_name}"
@@ -2056,19 +1723,13 @@ pkg_cron_preserve_schedule() {
 	local schedule
 	schedule=$(_pkg_cron_read_schedule "$cron_file") || return 1
 
-	# Export via eval — var_name validated as safe identifier above
+	# Safe: var_name validated above as shell identifier
 	eval "${var_name}=\${schedule}"
 	return 0
 }
 
-# pkg_cron_restore_schedule cron_file old_schedule — restore captured schedule
-# Arguments:
-#   $1 — cron file path
-#   $2 — old schedule string (5 cron fields, e.g., "*/10 * * * *")
-# Replaces the schedule portion (first 5 fields) of the first non-comment,
-# non-assignment line in cron_file with old_schedule.
-# Handles sed escaping for * characters in cron expressions.
-# Returns 1 if cron_file not found or no cron line found to replace.
+# pkg_cron_restore_schedule cron_file old_schedule — replace first cron schedule with old_schedule
+# Sed-escapes '*' and other metachars in both search and replacement; no-op if schedules match.
 pkg_cron_restore_schedule() {
 	local cron_file="$1" old_schedule="$2"
 
@@ -2082,25 +1743,22 @@ pkg_cron_restore_schedule() {
 		return 1
 	fi
 
-	# Find current schedule from first cron line
 	local current_schedule
 	current_schedule=$(_pkg_cron_read_schedule "$cron_file") || {
 		pkg_warn "pkg_cron_restore_schedule: no cron line found in ${cron_file}"
 		return 1
 	}
 
-	# If schedules are the same, nothing to do
 	if [[ "$current_schedule" = "$old_schedule" ]]; then
 		return 0
 	fi
 
-	# Escape current_schedule for BRE search: .*[\^$/\ must be escaped
-	# Escape old_schedule for sed replacement: &/\ only
+	# BRE escape for search (.*[\^$/\); replacement escape for &/\ only
 	local esc_current esc_old
 	esc_current=$(printf '%s' "$current_schedule" | sed 's/[.*[\^$/\\]/\\&/g')
 	esc_old=$(printf '%s' "$old_schedule" | sed 's/[&/\\]/\\&/g')
 
-	# Replace first occurrence only (sed with address range)
+	# sed address range limits to first occurrence only
 	sed -i "0,/${esc_current}/s/${esc_current}/${esc_old}/" "$cron_file" || {
 		pkg_warn "pkg_cron_restore_schedule: sed replacement failed on ${cron_file}"
 		return 1
@@ -2109,15 +1767,7 @@ pkg_cron_restore_schedule() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Documentation Installation
-# ══════════════════════════════════════════════════════════════════
-
-# _pkg_man_dir section — resolve man page directory for given section
-# Arguments:
-#   $1 — man section number (e.g., "1", "8")
-# Priority: /usr/share/man/man$section → /usr/local/share/man/man$section
-# Returns 1 if no directory found (creates /usr/share/man/man$section as fallback).
+# _pkg_man_dir section — echo man dir (/usr/share → /usr/local/share, else mkdir /usr/share)
 _pkg_man_dir() {
 	local section="$1"
 
@@ -2131,7 +1781,6 @@ _pkg_man_dir() {
 		return 0
 	fi
 
-	# Fallback: create standard path
 	local fallback="/usr/share/man/man${section}"
 	mkdir -p "$fallback" || {
 		pkg_error "_pkg_man_dir: failed to create ${fallback}"
@@ -2141,15 +1790,8 @@ _pkg_man_dir() {
 	return 0
 }
 
-# pkg_man_install src section name [sed_pairs...] — install man page
-# Arguments:
-#   $1 — source man page file
-#   $2 — man section number (e.g., "1", "8")
-#   $3 — man page name (without section suffix, e.g., "myapp")
-#   $4+ — optional sed replacement pairs as "old|new" strings
-# Copies source to temp, applies optional sed replacements, gzip -f,
-# installs to man directory as name.section.gz.
-# Returns 1 on failure.
+# pkg_man_install src section name [sed_pairs...] — gzip and install as name.section.gz
+# sed_pairs are "old|new" strings applied to a temp copy before compression.
 pkg_man_install() {
 	local src="$1" section="$2" name="$3"
 	shift 3
@@ -2170,7 +1812,6 @@ pkg_man_install() {
 		return 1
 	fi
 
-	# Work on a temp copy for sed + gzip
 	local tmpfile
 	tmpfile=$(mktemp "${PKG_TMPDIR}/man.XXXXXXXXXX") || {
 		pkg_error "pkg_man_install: mktemp failed"
@@ -2183,14 +1824,12 @@ pkg_man_install() {
 		return 1
 	}
 
-	# Apply optional sed replacement pairs (format: "old|new")
 	local pair old_str new_str esc_old esc_new
 	for pair in "$@"; do
 		old_str="${pair%%|*}"
 		new_str="${pair#*|}"
 		if [[ -n "$old_str" ]]; then
-			# Escape old_str for BRE search: .*[\^$&|/\ must be escaped
-			# Escape new_str for sed replacement: &|/\ only
+			# BRE escape for search (.*[\^$&|/\); replacement escape for &|/\ only
 			esc_old=$(printf '%s' "$old_str" | sed 's/[.*[\^$&|/\\]/\\&/g')
 			esc_new=$(printf '%s' "$new_str" | sed 's/[&|/\\]/\\&/g')
 			sed -i "s|${esc_old}|${esc_new}|g" "$tmpfile" || {
@@ -2199,14 +1838,12 @@ pkg_man_install() {
 		fi
 	done
 
-	# Compress
 	gzip -f "$tmpfile" || {
 		pkg_error "pkg_man_install: gzip failed"
 		command rm -f "$tmpfile"
 		return 1
 	}
 
-	# Install to man dir
 	local dest="${man_dir}/${name}.${section}.gz"
 	command cp -f "${tmpfile}.gz" "$dest" || {
 		pkg_error "pkg_man_install: failed to install to ${dest}"
@@ -2220,14 +1857,8 @@ pkg_man_install() {
 	return 0
 }
 
-# _pkg_install_sysfile src name dest_dir func_name — shared sysfile install helper
-# Internal helper: validates source file, ensures dest_dir exists, copies with mode 644.
-# Arguments:
-#   $1 — source file path
-#   $2 — name for installed file
-#   $3 — destination directory
-#   $4 — calling function name (for error messages)
-# Returns 1 on failure.
+# _pkg_install_sysfile src name dest_dir func_name — shared 0644 install helper
+# func_name is used for error-message attribution to the caller.
 _pkg_install_sysfile() {
 	local src="$1" name="$2" dest_dir="$3" func_name="$4"
 
@@ -2257,36 +1888,21 @@ _pkg_install_sysfile() {
 	return 0
 }
 
-# pkg_bash_completion src name — install bash completion file
-# Arguments:
-#   $1 — source completion file
-#   $2 — name for completion file (e.g., "myapp")
-# Installs to /etc/bash_completion.d/ with mode 644.
-# Returns 1 on failure.
+# pkg_bash_completion src name — install to /etc/bash_completion.d/ with mode 644
 pkg_bash_completion() {
 	_pkg_install_sysfile "$1" "$2" "/etc/bash_completion.d" "pkg_bash_completion" || return 1
 	pkg_info "installed bash completion: ${2}"
 	return 0
 }
 
-# pkg_logrotate_install src name — install logrotate configuration
-# Arguments:
-#   $1 — source logrotate config file
-#   $2 — name for logrotate config (e.g., "myapp")
-# Installs to /etc/logrotate.d/ with mode 644.
-# Returns 1 on failure.
+# pkg_logrotate_install src name — install to /etc/logrotate.d/ with mode 644
 pkg_logrotate_install() {
 	_pkg_install_sysfile "$1" "$2" "/etc/logrotate.d" "pkg_logrotate_install" || return 1
 	pkg_info "installed logrotate config: ${2}"
 	return 0
 }
 
-# pkg_doc_install dest_dir files... — install documentation files
-# Arguments:
-#   $1 — destination directory (e.g., /usr/share/doc/myapp)
-#   $2+ — source files to install (README, CHANGELOG, LICENSE, etc.)
-# Creates dest_dir if missing. Copies each file preserving name.
-# Returns 1 if dest_dir creation fails or no files specified.
+# pkg_doc_install dest_dir files... — copy doc files into dest_dir (creates if missing)
 pkg_doc_install() {
 	local dest_dir="$1"
 	shift
@@ -2320,19 +1936,9 @@ pkg_doc_install() {
 	return "$rc"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Config Migration
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_config_get conf_file var — read variable value from config file
-# Arguments:
-#   $1 — config file path
-#   $2 — variable name to read
-# Reads the first VAR=value or VAR="value" line matching var.
-# Strips surrounding quotes. Echoes raw file bytes to stdout (no shell
-# interpretation — escape sequences like \" and \$ are returned literally).
-# For the shell-interpreted value, source the file instead.
-# Returns 1 if file not found or variable not found.
+# pkg_config_get conf_file var — echo raw VAR=value bytes from first matching line
+# Strips surrounding quotes. Raw bytes are NOT shell-interpreted — escape sequences
+# (\\", \\$) are returned literally. Source the file instead to get shell-interpreted values.
 pkg_config_get() {
 	local conf_file="$1" var="$2"
 
@@ -2346,7 +1952,6 @@ pkg_config_get() {
 		return 1
 	fi
 
-	# Validate var name: must be a safe shell variable name
 	local _varname_re='^[a-zA-Z_][a-zA-Z0-9_]*$'
 	if [[ ! "$var" =~ $_varname_re ]]; then
 		pkg_error "pkg_config_get: invalid variable name: ${var}"
@@ -2354,8 +1959,6 @@ pkg_config_get() {
 	fi
 
 	local value
-	# Match VAR=value or VAR="value" or VAR='value'
-	# Use awk for single-pass extraction
 	value=$(awk -F= -v varname="$var" '
 		/^[[:space:]]*#/ { next }
 		{
@@ -2374,7 +1977,7 @@ pkg_config_get() {
 	' "$conf_file")
 
 	if [[ -z "$value" ]]; then
-		# Check if the variable exists with an empty value
+		# Distinguish empty value from missing variable
 		if grep -q "^[[:space:]]*${var}=" "$conf_file"; then
 			echo ""
 			return 0
@@ -2386,14 +1989,8 @@ pkg_config_get() {
 	return 0
 }
 
-# pkg_config_set conf_file var val — set variable value in config file
-# Arguments:
-#   $1 — config file path
-#   $2 — variable name
-#   $3 — new value
-# If variable exists, replaces the value in-place via sed.
-# If variable does not exist, appends VAR="value" to end of file.
-# Returns 1 if file not found.
+# pkg_config_set conf_file var val — sed-replace existing VAR= line or append VAR="value"
+# val is shell-escaped for double-quote context before sed replacement.
 pkg_config_set() {
 	local conf_file="$1" var="$2" val="$3"
 
@@ -2407,34 +2004,29 @@ pkg_config_set() {
 		return 1
 	fi
 
-	# Validate var name: must be a safe shell variable name to prevent
-	# regex/sed injection — config variable names never contain metacharacters
+	# Reject metacharacter-bearing names to prevent regex/sed injection
 	local _varname_re='^[a-zA-Z_][a-zA-Z0-9_]*$'
 	if [[ ! "$var" =~ $_varname_re ]]; then
 		pkg_error "pkg_config_set: invalid variable name: ${var}"
 		return 1
 	fi
 
-	# Shell-escape val for sourcing safety: \, ", $, ` must be escaped inside double quotes
+	# Shell-escape for double-quote context: \ first to avoid double-escaping
 	local _shell_val="${val//\\/\\\\}"
 	_shell_val="${_shell_val//\"/\\\"}"
 	_shell_val="${_shell_val//\$/\\\$}"
 	_shell_val="${_shell_val//\`/\\\`}"
 
-	# Escape shell-safe val for sed replacement (handle &, |, /, \)
-	# Pipe must be escaped because the outer sed uses | as delimiter
+	# Escape for sed replacement; pipe must be escaped because outer sed uses | as delimiter
 	local esc_val
 	esc_val=$(printf '%s' "$_shell_val" | sed 's/[&|/\]/\\&/g')
 
-	# Check if variable already exists (uncommented)
 	if grep -q "^[[:space:]]*${var}=" "$conf_file"; then
-		# Replace existing value — match VAR=anything
 		sed -i "s|^[[:space:]]*${var}=.*|${var}=\"${esc_val}\"|" "$conf_file" || {
 			pkg_error "pkg_config_set: sed failed on ${conf_file}"
 			return 1
 		}
 	else
-		# Append new variable
 		printf '%s="%s"\n' "$var" "$_shell_val" >> "$conf_file" || {
 			pkg_error "pkg_config_set: failed to append to ${conf_file}"
 			return 1
@@ -2444,25 +2036,11 @@ pkg_config_set() {
 	return 0
 }
 
-# pkg_config_merge old_conf new_conf output — AWK-based config merge
-# Arguments:
-#   $1 — old config file (existing user values)
-#   $2 — new config file (new template with defaults)
-#   $3 — output file path
-# Merge strategy:
-#   1. First pass: read all VAR=value from old config into array
-#   2. Second pass: for each line in new config, if VAR= matches old key,
-#      substitute old value; otherwise keep new default
-#   3. Preserves comments, ordering, whitespace from new template
-#   4. Safe for quoted values, multi-word values, empty values
-# A line is treated as an assignment only when it matches a real shell
-# assignment anchor (^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=). Lines containing
-# `=` or `==` inside conditional expressions (e.g. `[ "$X" = "1" ]`,
-# `[[ "$Y" == "auto" ]]`) are passed through unchanged. Files that assign
-# the same variable in multiple branches (e.g. if/else STATE_MATCH=...)
-# remain unsafe to merge — the last-seen value collapses both branches.
-# Use this function only on flat VAR=value config files.
-# Returns 1 on failure.
+# pkg_config_merge old_conf new_conf output — AWK two-pass merge of old values into new template
+# Anchors to real shell assignments (^[[:space:]]*IDENT=); conditional-expression lines like
+# `[ "$X" = "1" ]` or `[[ "$Y" == "auto" ]]` pass through unchanged. Files that assign the
+# same variable in multiple branches remain unsafe — last-seen value collapses both branches,
+# so only use on flat VAR=value config files.
 pkg_config_merge() {
 	local old_conf="$1" new_conf="$2" output="$3"
 
@@ -2481,7 +2059,6 @@ pkg_config_merge() {
 		return 1
 	fi
 
-	# Ensure output directory exists
 	local output_dir
 	output_dir=$(dirname "$output")
 	if [[ ! -d "$output_dir" ]]; then
@@ -2491,8 +2068,7 @@ pkg_config_merge() {
 		}
 	fi
 
-	# Preserve permissions of new_conf for output file
-	# stat -c is GNU coreutils (all supported Linux targets); FreeBSD uses stat -f '%OLp'
+	# stat -c is GNU (all supported Linux targets); FreeBSD uses stat -f '%OLp'
 	local _preserve_mode=""
 	if [[ -f "$new_conf" ]]; then
 		_preserve_mode=$(stat -Lc '%a' "$new_conf" 2>/dev/null) || \
@@ -2500,8 +2076,7 @@ pkg_config_merge() {
 			_preserve_mode=""
 	fi
 
-	# AWK two-pass merge: old values into new template
-	# Uses FILENAME instead of FNR==NR to handle empty old config correctly
+	# Uses FILENAME instead of FNR==NR so an empty old config still reaches the template pass
 	local _tmp_output
 	_tmp_output=$(mktemp "${PKG_TMPDIR}/pkg_merge.XXXXXXXXXX") || {
 		pkg_error "pkg_config_merge: mktemp failed"
@@ -2571,15 +2146,9 @@ pkg_config_merge() {
 	return 0
 }
 
-# pkg_config_migrate_var conf_file old_var new_var [transform] — rename config variable
-# Arguments:
-#   $1 — config file path
-#   $2 — old variable name
-#   $3 — new variable name
-#   $4 — optional transform: "none" (default), "lower", "upper"
-# If old_var exists and new_var does not, renames old_var to new_var.
-# Optionally transforms the value. Leaves a comment noting the migration.
-# Returns 0 if migrated or if no migration needed; 1 on error.
+# pkg_config_migrate_var conf_file old_var new_var [transform] — rename VAR, apply case transform
+# transform: none|lower|upper (default none). No-op if old_var missing or new_var already set.
+# Leaves a migration comment in the file for traceability.
 pkg_config_migrate_var() {
 	local conf_file="$1" old_var="$2" new_var="$3" transform="${4:-none}"
 
@@ -2593,7 +2162,6 @@ pkg_config_migrate_var() {
 		return 1
 	fi
 
-	# Validate variable names: must be safe shell identifiers
 	local _varname_re='^[a-zA-Z_][a-zA-Z0-9_]*$'
 	if [[ ! "$old_var" =~ $_varname_re ]]; then
 		pkg_error "pkg_config_migrate_var: invalid variable name: ${old_var}"
@@ -2604,24 +2172,19 @@ pkg_config_migrate_var() {
 		return 1
 	fi
 
-	# Check if old_var exists
 	if ! grep -q "^[[:space:]]*${old_var}=" "$conf_file"; then
-		# Nothing to migrate
 		return 0
 	fi
 
-	# Check if new_var already exists
 	if grep -q "^[[:space:]]*${new_var}=" "$conf_file"; then
-		# New var already set — just comment out old var
+		# New var already set — comment out the orphan old_var
 		sed -i "s|^[[:space:]]*${old_var}=|# migrated to ${new_var}: ${old_var}=|" "$conf_file"
 		return 0
 	fi
 
-	# Read old value
 	local old_val
 	old_val=$(pkg_config_get "$conf_file" "$old_var") || old_val=""
 
-	# Apply transform
 	case "$transform" in
 		lower)
 			old_val=$(echo "$old_val" | tr '[:upper:]' '[:lower:]')
@@ -2637,20 +2200,17 @@ pkg_config_migrate_var() {
 			;;
 	esac
 
-	# Shell-escape old_val for sourcing safety: the AWK raw reader returns literal
-	# file bytes between quotes — single-quoted originals lack escape sequences,
-	# so writing them inside double quotes without escaping creates injection vectors.
+	# AWK raw reader returns literal bytes between quotes; single-quoted originals lack
+	# escape sequences, so rewriting them in double quotes without escaping is an injection vector.
 	# Escape \, ", $, ` for double-quote context (backslash first to avoid double-escaping).
 	local _shell_val="${old_val//\\/\\\\}"
 	_shell_val="${_shell_val//\"/\\\"}"
 	_shell_val="${_shell_val//\$/\\\$}"
 	_shell_val="${_shell_val//\`/\\\`}"
 
-	# Escape shell-safe val for sed replacement (handle &, |, /, \)
 	local esc_val
 	esc_val=$(printf '%s' "$_shell_val" | sed 's/[&|/\]/\\&/g')
 
-	# Replace old_var line with new_var and add migration comment
 	sed -i "s|^[[:space:]]*${old_var}=.*|# migrated: ${old_var} -> ${new_var}\n${new_var}=\"${esc_val}\"|" "$conf_file" || {
 		pkg_error "pkg_config_migrate_var: sed failed on ${conf_file}"
 		return 1
@@ -2659,15 +2219,8 @@ pkg_config_migrate_var() {
 	return 0
 }
 
-# pkg_config_clamp conf_file var max_val [msg] — clamp numeric config value
-# Arguments:
-#   $1 — config file path
-#   $2 — variable name
-#   $3 — maximum allowed value (integer)
-#   $4 — optional warning message (logged if value is clamped)
-# If the current value exceeds max_val, sets it to max_val and warns.
-# No-op if variable not found or value is within range.
-# Returns 0 on success; 1 on error.
+# pkg_config_clamp conf_file var max_val [msg] — clamp numeric value to max_val and warn
+# No-op if variable not found, value is non-numeric, or already within range.
 pkg_config_clamp() {
 	local conf_file="$1" var="$2" max_val="$3" msg="${4:-}"
 
@@ -2681,23 +2234,19 @@ pkg_config_clamp() {
 		return 1
 	fi
 
-	# Validate max_val is numeric
 	local numeric_pat='^[0-9]+$'
 	if ! [[ "$max_val" =~ $numeric_pat ]]; then
 		pkg_error "pkg_config_clamp: max_val must be a positive integer"
 		return 1
 	fi
 
-	# Read current value
 	local current_val
 	current_val=$(pkg_config_get "$conf_file" "$var") || return 0  # not found = no-op
 
-	# Check if current value is numeric
 	if ! [[ "$current_val" =~ $numeric_pat ]]; then
 		return 0  # non-numeric value — skip clamping
 	fi
 
-	# Compare and clamp if needed
 	if [[ "$current_val" -gt "$max_val" ]]; then
 		pkg_config_set "$conf_file" "$var" "$max_val" || return 1
 		if [[ -n "$msg" ]]; then
@@ -2710,24 +2259,15 @@ pkg_config_clamp() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: FHS Layout & Symlink Farm
-# ══════════════════════════════════════════════════════════════════
-
-# FHS registry — parallel indexed arrays (NOT declare -A)
+# FHS registry — parallel indexed arrays (bash 4.1 compat: no declare -A globals)
 # Populated by pkg_fhs_register(), consumed by pkg_fhs_install() and generators.
 _PKG_FHS_SRCS=()
 _PKG_FHS_DESTS=()
 _PKG_FHS_MODES=()
 _PKG_FHS_TYPES=()
 
-# pkg_fhs_register src fhs_dest mode [type] — register a file mapping
-# Arguments:
-#   $1 — source relative path (e.g., "files/bfd")
-#   $2 — FHS destination path (e.g., "/usr/sbin/bfd")
-#   $3 — permission mode (e.g., "750")
-#   $4 — optional type: bin|lib|conf|data|state|doc (default: "data")
-# Appends to parallel indexed arrays. Returns 1 on validation failure.
+# pkg_fhs_register src fhs_dest mode [type] — register a mapping into the FHS registry
+# type: bin|lib|conf|data|state|doc (default "data"); mode validated as 3-4 digit octal.
 pkg_fhs_register() {
 	local src="$1" fhs_dest="$2" mode="$3" ftype="${4:-data}"
 
@@ -2736,7 +2276,6 @@ pkg_fhs_register() {
 		return 1
 	fi
 
-	# Validate type
 	case "$ftype" in
 		bin|lib|conf|data|state|doc) ;;
 		*)
@@ -2745,7 +2284,6 @@ pkg_fhs_register() {
 			;;
 	esac
 
-	# Validate mode is numeric (3-4 digit octal)
 	local mode_pat='^[0-7]{3,4}$'
 	if ! [[ "$mode" =~ $mode_pat ]]; then
 		pkg_error "pkg_fhs_register: invalid mode '${mode}' (expected octal, e.g., 750)"
@@ -2760,12 +2298,8 @@ pkg_fhs_register() {
 	return 0
 }
 
-# pkg_fhs_install src_dir — install all registered files from source to FHS paths
-# Arguments:
-#   $1 — source directory root (files are resolved relative to this)
-# Copies each registered file from src_dir/src to fhs_dest with the
-# specified permission mode. Creates parent directories as needed.
-# Returns 1 on any copy failure (continues processing remaining files).
+# pkg_fhs_install src_dir — copy each registered src_dir/src to its fhs_dest with registered mode
+# Creates parent dirs; continues on failure and returns 1 if any copy failed.
 pkg_fhs_install() {
 	local src_dir="$1"
 
@@ -2791,7 +2325,6 @@ pkg_fhs_install() {
 		dest_path="${_PKG_FHS_DESTS[$i]}"
 		dest_dir="$(dirname "$dest_path")"
 
-		# Create destination directory if needed
 		if [[ ! -d "$dest_dir" ]]; then
 			mkdir -p "$dest_dir" || {
 				pkg_error "pkg_fhs_install: failed to create directory ${dest_dir}"
@@ -2801,7 +2334,7 @@ pkg_fhs_install() {
 			}
 		fi
 
-		# Handle directory-type sources (state dirs, etc.)
+		# Directory-type sources are state dirs and similar
 		if [[ -d "$src_path" ]]; then
 			command cp -pR "$src_path" "$dest_path" || {
 				pkg_error "pkg_fhs_install: failed to copy directory ${_PKG_FHS_SRCS[$i]}"
@@ -2823,7 +2356,6 @@ pkg_fhs_install() {
 			continue
 		fi
 
-		# Set permissions
 		chmod "${_PKG_FHS_MODES[$i]}" "$dest_path" 2>/dev/null  # best-effort chmod
 	done
 
@@ -2835,13 +2367,8 @@ pkg_fhs_install() {
 	return "$rc"
 }
 
-# pkg_fhs_symlink_farm legacy_root — create backward-compat symlink farm
-# Arguments:
-#   $1 — legacy install root (e.g., "/usr/local/bfd")
-# Creates symlinks from legacy paths to real FHS locations for each
-# registered file. Creates parent directories under legacy_root as needed.
-# Allows old scripts and configs pointing to the legacy path to keep working.
-# Returns 1 on any symlink failure (continues processing remaining entries).
+# pkg_fhs_symlink_farm legacy_root — create legacy-path → FHS symlinks for each registered file
+# Keeps old scripts/configs that reference legacy paths working after the FHS migration.
 pkg_fhs_symlink_farm() {
 	local legacy_root="$1"
 
@@ -2862,7 +2389,6 @@ pkg_fhs_symlink_farm() {
 		legacy_path="${legacy_root}/${_PKG_FHS_SRCS[$i]}"
 		link_dir="$(dirname "$legacy_path")"
 
-		# Create parent directory for the symlink
 		if [[ ! -d "$link_dir" ]]; then
 			mkdir -p "$link_dir" || {
 				pkg_error "pkg_fhs_symlink_farm: failed to create ${link_dir}"
@@ -2872,7 +2398,6 @@ pkg_fhs_symlink_farm() {
 			}
 		fi
 
-		# Create symlink: legacy_path -> fhs_dest
 		pkg_symlink "$dest_path" "$legacy_path" || {
 			rc=1
 			failed=$((failed + 1))
@@ -2888,12 +2413,8 @@ pkg_fhs_symlink_farm() {
 	return "$rc"
 }
 
-# pkg_fhs_symlink_farm_cleanup legacy_root — remove symlink farm
-# Arguments:
-#   $1 — legacy install root (e.g., "/usr/local/bfd")
-# Removes symlinks created by pkg_fhs_symlink_farm(). Skips non-symlinks
-# for safety. Removes empty parent directories under legacy_root afterward.
-# Returns 0 always (best-effort cleanup).
+# pkg_fhs_symlink_farm_cleanup legacy_root — remove symlinks created by pkg_fhs_symlink_farm
+# Skips non-symlinks for safety; empty parent dirs under legacy_root are pruned afterward.
 pkg_fhs_symlink_farm_cleanup() {
 	local legacy_root="$1"
 
@@ -2915,7 +2436,6 @@ pkg_fhs_symlink_farm_cleanup() {
 		fi
 	done
 
-	# Clean up empty directories under legacy_root (bottom-up)
 	if [[ -d "$legacy_root" ]]; then
 		find "$legacy_root" -type d -empty -delete 2>/dev/null  # best-effort cleanup
 	fi
@@ -2923,16 +2443,14 @@ pkg_fhs_symlink_farm_cleanup() {
 	return 0
 }
 
-# pkg_fhs_gen_rpm_files — generate RPM %files section from registry
-# Outputs RPM %files lines to stdout. Config files get %config(noreplace).
-# Directories get %dir. Call after populating registry with pkg_fhs_register().
+# pkg_fhs_gen_rpm_files — emit RPM %files lines from the FHS registry
+# Config files get %config(noreplace); parent dirs get %dir. Registry must be pre-populated.
 pkg_fhs_gen_rpm_files() {
 	local count=${#_PKG_FHS_SRCS[@]}
 	if [[ "$count" -eq 0 ]]; then
 		return 0
 	fi
 
-	# Track directories we have already emitted
 	local seen_dirs="" i dest ftype dest_dir
 
 	for ((i = 0; i < count; i++)); do
@@ -2940,7 +2458,6 @@ pkg_fhs_gen_rpm_files() {
 		ftype="${_PKG_FHS_TYPES[$i]}"
 		dest_dir="$(dirname "$dest")"
 
-		# Emit %dir for parent directory if not seen
 		case "$seen_dirs" in
 			*"|${dest_dir}|"*) ;;
 			*)
@@ -2949,7 +2466,6 @@ pkg_fhs_gen_rpm_files() {
 				;;
 		esac
 
-		# Config files get %config(noreplace)
 		if [[ "$ftype" = "conf" ]]; then
 			echo "%config(noreplace) ${dest}"
 		else
@@ -2960,8 +2476,7 @@ pkg_fhs_gen_rpm_files() {
 	return 0
 }
 
-# pkg_fhs_gen_deb_dirs — generate DEB dirs file from registry
-# Outputs unique directory paths (one per line) to stdout.
+# pkg_fhs_gen_deb_dirs — emit unique DEB dirs file entries (one path per line)
 pkg_fhs_gen_deb_dirs() {
 	local count=${#_PKG_FHS_SRCS[@]}
 	if [[ "$count" -eq 0 ]]; then
@@ -2973,7 +2488,6 @@ pkg_fhs_gen_deb_dirs() {
 	for ((i = 0; i < count; i++)); do
 		dest_dir="$(dirname "${_PKG_FHS_DESTS[$i]}")"
 
-		# Emit directory if not seen
 		case "$seen_dirs" in
 			*"|${dest_dir}|"*) ;;
 			*)
@@ -2986,10 +2500,7 @@ pkg_fhs_gen_deb_dirs() {
 	return 0
 }
 
-# pkg_fhs_gen_deb_links legacy_root — generate DEB links file from registry
-# Arguments:
-#   $1 — legacy install root (e.g., "/usr/local/bfd")
-# Outputs "fhs_dest legacy_path" pairs to stdout (DEB links format).
+# pkg_fhs_gen_deb_links legacy_root — emit "fhs_dest legacy_path" pairs (DEB links format)
 pkg_fhs_gen_deb_links() {
 	local legacy_root="$1"
 
@@ -3013,8 +2524,7 @@ pkg_fhs_gen_deb_links() {
 	return 0
 }
 
-# pkg_fhs_gen_deb_conffiles — generate DEB conffiles from registry (type=conf only)
-# Outputs absolute paths of config files to stdout (one per line).
+# pkg_fhs_gen_deb_conffiles — emit absolute paths of registry entries with type=conf
 pkg_fhs_gen_deb_conffiles() {
 	local count=${#_PKG_FHS_SRCS[@]}
 	if [[ "$count" -eq 0 ]]; then
@@ -3031,12 +2541,8 @@ pkg_fhs_gen_deb_conffiles() {
 	return 0
 }
 
-# pkg_fhs_gen_sed_pairs install_path_var — generate sed expressions for path transform
-# Arguments:
-#   $1 — install path variable name (e.g., "INSTALL_PATH" or "inspath")
-# Generates sed -e expressions replacing FHS destination directory paths with
-# a variable reference. Used by install.sh to patch scripts at install time.
-# Example output: -e 's|/usr/sbin|$INSTALL_PATH|g'
+# pkg_fhs_gen_sed_pairs install_path_var — emit -e 's|dest_dir|$VAR|g' for each unique FHS dir
+# Used by install.sh to patch shipped scripts at install time.
 pkg_fhs_gen_sed_pairs() {
 	local install_path_var="$1"
 
@@ -3050,7 +2556,6 @@ pkg_fhs_gen_sed_pairs() {
 		return 0
 	fi
 
-	# Collect unique directory prefixes from destinations
 	local seen_prefixes="" i dest_dir
 
 	for ((i = 0; i < count; i++)); do
@@ -3068,15 +2573,9 @@ pkg_fhs_gen_sed_pairs() {
 	return 0
 }
 
-# pkg_fhs_gen_manifest legacy_root — generate symlink manifest from FHS registry
-# Arguments:
-#   $1 — legacy install root (e.g., "/etc/apf", "/usr/local/bfd")
-# Writes a tab-separated manifest to stdout mapping legacy symlink paths
-# to their FHS target paths. Used at package build time to produce a
-# manifest file consumed by pkg_fhs_verify_farm() at runtime.
-# Output format:
-#   # pkg_lib:symlink-manifest:1
-#   {legacy_root}/{src}\t{fhs_dest}
+# pkg_fhs_gen_manifest legacy_root — emit tab-separated "legacy_path\tfhs_dest" manifest
+# Produced at build time, consumed at runtime by pkg_fhs_verify_farm(). Header line:
+# "# pkg_lib:symlink-manifest:1".
 pkg_fhs_gen_manifest() {
 	local legacy_root="$1"
 
@@ -3101,14 +2600,10 @@ pkg_fhs_gen_manifest() {
 	return 0
 }
 
-# pkg_fhs_verify_farm manifest_path — verify and repair symlink farm from manifest
-# Arguments:
-#   $1 — path to manifest file (e.g., "$INSTALL_PATH/internals/.symlink-manifest")
-# Reads the manifest and verifies each symlink entry. Repairs broken, missing,
-# wrong-target, and regular-file-replaced symlinks when the target exists.
-# Returns 0 if all symlinks are valid (including after repair).
-# Returns 1 if any target is missing or a directory blocks a symlink path.
-# Returns 0 silently if the manifest file does not exist (install.sh layout).
+# pkg_fhs_verify_farm manifest_path — verify and self-repair the symlink farm from manifest
+# Repairs broken, wrong-target, and regular-file-blocked links when the target exists.
+# Returns 1 if any target is missing or a directory blocks a symlink path. No manifest = 0
+# silently (install.sh layout has no symlink farm).
 pkg_fhs_verify_farm() {
 	local manifest_path="$1"
 
@@ -3117,7 +2612,6 @@ pkg_fhs_verify_farm() {
 		return 1
 	fi
 
-	# No manifest = install.sh layout, no symlink farm to verify
 	if [[ ! -f "$manifest_path" ]]; then
 		return 0
 	fi
@@ -3126,40 +2620,33 @@ pkg_fhs_verify_farm() {
 	local link_path target
 
 	while IFS=$'\t' read -r link_path target; do
-		# Skip blank lines
 		[[ -z "$link_path" ]] && continue
-		# Skip comment lines
 		[[ "$link_path" = \#* ]] && continue
-		# Skip malformed lines (no target after tab-split)
 		if [[ -z "$target" ]]; then
 			pkg_warn "malformed manifest line: ${link_path}"
 			continue
 		fi
 
-		# State: valid symlink, correct target — skip
 		if [[ -L "$link_path" ]]; then
 			local current_target
 			current_target=$(readlink "$link_path")
 			if [[ "$current_target" = "$target" ]]; then
-				# Correct — check target still exists
 				if [[ -e "$link_path" ]]; then
 					continue
 				fi
-				# Symlink is correct but target is gone (dangling)
 				pkg_error "symlink target missing: ${target} — reinstall package"
 				rc=1
 				continue
 			fi
 
-			# State: valid symlink, wrong target
+			# Wrong target but still resolves — repair in place
 			if [[ -e "$link_path" ]]; then
-				# Wrong target but points to something that exists
 				pkg_symlink "$target" "$link_path"
 				pkg_warn "repaired symlink (wrong target): ${link_path}"
 				continue
 			fi
 
-			# Broken symlink (dangling) with wrong target — check if correct target exists
+			# Dangling with wrong target — only repair if correct target exists
 			if [[ -e "$target" ]]; then
 				pkg_symlink "$target" "$link_path"
 				pkg_warn "repaired symlink: ${link_path} -> ${target}"
@@ -3170,21 +2657,18 @@ pkg_fhs_verify_farm() {
 			continue
 		fi
 
-		# State: directory at link path (not a symlink)
 		if [[ -d "$link_path" ]]; then
 			pkg_error "directory exists at symlink path: ${link_path} — remove manually"
 			rc=1
 			continue
 		fi
 
-		# State: regular file at link path (not a symlink)
 		if [[ -e "$link_path" ]]; then
 			pkg_symlink "$target" "$link_path"
 			pkg_warn "replaced regular file with symlink: ${link_path}"
 			continue
 		fi
 
-		# State: nothing at link path (missing)
 		if [[ -e "$target" ]]; then
 			pkg_symlink "$target" "$link_path"
 			pkg_warn "repaired symlink: ${link_path} -> ${target}"
@@ -3197,14 +2681,7 @@ pkg_fhs_verify_farm() {
 	return "$rc"
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Uninstall Primitives
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_uninstall_confirm project_name — interactive y/N confirmation prompt
-# Arguments:
-#   $1 — project name (e.g., "BFD", "APF")
-# Reads from stdin. Returns 0 if confirmed (y/Y), 1 if declined or non-interactive.
+# pkg_uninstall_confirm project_name — interactive y/N prompt (0=confirmed, 1=declined)
 pkg_uninstall_confirm() {
 	local project_name="$1"
 
@@ -3224,11 +2701,7 @@ pkg_uninstall_confirm() {
 	esac
 }
 
-# pkg_uninstall_files paths... — remove files and directories
-# Arguments:
-#   $1+ — file or directory paths to remove
-# Skips paths that do not exist (no error). Removes files with rm -f,
-# directories with rm -rf. Returns 0 always (best-effort removal).
+# pkg_uninstall_files paths... — best-effort rm of files (rm -f) and dirs (rm -rf)
 pkg_uninstall_files() {
 	if [[ $# -eq 0 ]]; then
 		pkg_error "pkg_uninstall_files: at least one path required"
@@ -3251,12 +2724,7 @@ pkg_uninstall_files() {
 	return 0
 }
 
-# pkg_uninstall_man section name — remove installed man page
-# Arguments:
-#   $1 — man section number (e.g., "1", "8")
-#   $2 — man page name without section (e.g., "maldet", "bfd")
-# Removes both uncompressed and gzipped man pages from standard locations.
-# Returns 0 always (best-effort removal).
+# pkg_uninstall_man section name — remove uncompressed and gzipped man page from standard dirs
 pkg_uninstall_man() {
 	local section="$1" name="$2"
 
@@ -3275,10 +2743,7 @@ pkg_uninstall_man() {
 	return 0
 }
 
-# pkg_uninstall_cron paths... — remove cron files
-# Arguments:
-#   $1+ — cron file paths to remove (e.g., "/etc/cron.d/bfd", "/etc/cron.daily/bfd")
-# Skips paths that do not exist. Returns 0 always (best-effort removal).
+# pkg_uninstall_cron paths... — best-effort rm of cron files (skips missing paths)
 pkg_uninstall_cron() {
 	if [[ $# -eq 0 ]]; then
 		pkg_error "pkg_uninstall_cron: at least one path required"
@@ -3295,11 +2760,7 @@ pkg_uninstall_cron() {
 	return 0
 }
 
-# pkg_uninstall_logrotate name — remove logrotate config
-# Arguments:
-#   $1 — logrotate config name (e.g., "bfd", "maldet")
-# Removes /etc/logrotate.d/$name.
-# Returns 0 always (best-effort removal).
+# pkg_uninstall_logrotate name — best-effort rm of /etc/logrotate.d/$name
 pkg_uninstall_logrotate() {
 	local name="$1"
 
@@ -3312,11 +2773,7 @@ pkg_uninstall_logrotate() {
 	return 0
 }
 
-# pkg_uninstall_completion name — remove bash completion file
-# Arguments:
-#   $1 — completion script name (e.g., "bfd", "maldet")
-# Removes /etc/bash_completion.d/$name.
-# Returns 0 always (best-effort removal).
+# pkg_uninstall_completion name — best-effort rm of /etc/bash_completion.d/$name
 pkg_uninstall_completion() {
 	local name="$1"
 
@@ -3329,11 +2786,7 @@ pkg_uninstall_completion() {
 	return 0
 }
 
-# pkg_uninstall_sysconfig name — remove sysconfig/default override file
-# Arguments:
-#   $1 — service name (e.g., "bfd", "apf")
-# Removes /etc/sysconfig/$name (RHEL) and /etc/default/$name (Debian).
-# Returns 0 always (best-effort removal).
+# pkg_uninstall_sysconfig name — rm /etc/sysconfig/$name (RHEL) and /etc/default/$name (Debian)
 pkg_uninstall_sysconfig() {
 	local name="$1"
 
@@ -3347,16 +2800,8 @@ pkg_uninstall_sysconfig() {
 	return 0
 }
 
-# ══════════════════════════════════════════════════════════════════
-# Section: Manifest Support
-# ══════════════════════════════════════════════════════════════════
-
-# pkg_manifest_load manifest_file — source a project manifest file
-# Arguments:
-#   $1 — path to manifest file (e.g., "pkg.manifest")
-# Sources the file to set PKG_* variables. The manifest file is a plain
-# bash variable assignment file (key="value" per line).
-# Returns 1 if file not found or source fails.
+# pkg_manifest_load manifest_file — source a project manifest (plain key="value" bash file)
+# Defense-in-depth: refuses manifests not owned by the current user.
 pkg_manifest_load() {
 	local manifest_file="$1"
 
@@ -3370,7 +2815,6 @@ pkg_manifest_load() {
 		return 1
 	fi
 
-	# Defense-in-depth: reject manifest not owned by current user
 	if [[ ! -O "$manifest_file" ]]; then
 		pkg_error "pkg_manifest_load: ${manifest_file} not owned by current user"
 		return 1
@@ -3385,9 +2829,7 @@ pkg_manifest_load() {
 	return 0
 }
 
-# pkg_manifest_validate — validate required manifest variables are set
-# Checks that PKG_NAME, PKG_VERSION, PKG_SUMMARY, and PKG_INSTALL_PATH
-# are non-empty. Returns 1 if any required variable is missing.
+# pkg_manifest_validate — require PKG_{NAME,VERSION,SUMMARY,INSTALL_PATH} to be non-empty
 pkg_manifest_validate() {
 	local rc=0
 

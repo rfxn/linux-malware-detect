@@ -21,29 +21,20 @@
 _ALERT_LIB_LOADED=1
 
 # shellcheck disable=SC2034
-ALERT_LIB_VERSION="1.0.6"
+ALERT_LIB_VERSION="1.0.7"
 
-# Channel registry — consuming projects populate via alert_channel_register()
-# Uses parallel indexed arrays instead of declare -A to avoid scope issues
-# when sourced from inside a function (e.g., BATS load, wrapper functions).
-# Simple array assignment creates globals; declare -A creates locals in functions.
+# Parallel indexed arrays (not declare -A) — sourcing from inside a function
+# (BATS load, wrapper fns) would otherwise create locals instead of globals.
 _ALERT_CHANNEL_NAMES=()
 _ALERT_CHANNEL_HANDLERS=()
 _ALERT_CHANNEL_ENABLED=()
 
-# Configurable defaults — consuming projects override via environment
 ALERT_CURL_TIMEOUT="${ALERT_CURL_TIMEOUT:-30}"
 ALERT_CURL_MAX_TIME="${ALERT_CURL_MAX_TIME:-120}"
 ALERT_TMPDIR="${ALERT_TMPDIR:-${TMPDIR:-/tmp}}"
 
-# ---------------------------------------------------------------------------
-# Channel Registry
-# ---------------------------------------------------------------------------
-
 # _alert_channel_find name — locate channel index by name
-# Linear scan of _ALERT_CHANNEL_NAMES. Sets _ALERT_CHANNEL_IDX on success
-# (avoids subshell fork from stdout return, same pattern as _ALERT_TPL_RESOLVED).
-# Returns 0 if found, 1 if not found.
+# Sets _ALERT_CHANNEL_IDX to avoid subshell fork (pattern shared with _ALERT_TPL_RESOLVED).
 _alert_channel_find() {
 	local name="$1"
 	local i
@@ -57,9 +48,7 @@ _alert_channel_find() {
 	return 1
 }
 
-# alert_channel_register name handler_fn — register a delivery channel
-# Appends to parallel indexed arrays. Channel starts disabled (enabled=0).
-# Returns 1 if name is empty, handler_fn is empty, or name already registered.
+# alert_channel_register name handler_fn — register a delivery channel (starts disabled)
 alert_channel_register() {
 	local name="$1" handler_fn="$2"
 	if [ -z "$name" ]; then
@@ -81,7 +70,6 @@ alert_channel_register() {
 }
 
 # alert_channel_enable name — mark channel as active
-# Returns 1 if channel not registered.
 alert_channel_enable() {
 	local name="$1"
 	if ! _alert_channel_find "$name"; then
@@ -93,7 +81,6 @@ alert_channel_enable() {
 }
 
 # alert_channel_disable name — mark channel as inactive
-# Returns 1 if channel not registered.
 alert_channel_disable() {
 	local name="$1"
 	if ! _alert_channel_find "$name"; then
@@ -105,7 +92,6 @@ alert_channel_disable() {
 }
 
 # alert_channel_enabled name — check if channel is active
-# Returns 0 if enabled, 1 if disabled or not found.
 alert_channel_enabled() {
 	local name="$1"
 	if ! _alert_channel_find "$name"; then
@@ -114,15 +100,8 @@ alert_channel_enabled() {
 	[ "${_ALERT_CHANNEL_ENABLED[_ALERT_CHANNEL_IDX]}" = "1" ]
 }
 
-# ---------------------------------------------------------------------------
-# Template Engine
-# ---------------------------------------------------------------------------
-
-# _alert_tpl_render template_file — render template by replacing {{VAR}} tokens
-# with values from exported environment variables. Single-pass awk using
-# ENVIRON array. Unknown/unset tokens become empty strings.
-# Safe: no shell code execution, no eval, mawk-compatible.
-# Output goes to stdout.
+# _alert_tpl_render template_file — render {{VAR}} tokens from environ to stdout
+# Single-pass awk via ENVIRON; unknown tokens become empty. No eval, mawk-compatible.
 _alert_tpl_render() {
 	local template_file="$1"
 	if [ ! -f "$template_file" ]; then
@@ -139,10 +118,8 @@ _alert_tpl_render() {
 	}' "$template_file"
 }
 
-# _alert_tpl_resolve template_dir template_name — resolve template with custom.d/ override
-# If $template_dir/custom.d/$template_name exists, uses that path (user override).
-# Otherwise uses $template_dir/$template_name (shipped default).
-# Sets _ALERT_TPL_RESOLVED (avoids subshell fork from stdout return).
+# _alert_tpl_resolve template_dir template_name — resolve with custom.d/ override
+# Sets _ALERT_TPL_RESOLVED to avoid subshell fork from stdout return.
 _alert_tpl_resolve() {
 	local template_dir="$1" template_name="$2"
 	_ALERT_TPL_RESOLVED="$template_dir/$template_name"
@@ -151,15 +128,8 @@ _alert_tpl_resolve() {
 	fi
 }
 
-# ---------------------------------------------------------------------------
-# Escaping Functions
-# ---------------------------------------------------------------------------
-
-# _alert_html_escape str — escape HTML special characters for safe embedding
-# Handles: & < > " ' (& first to avoid double-escaping)
-# Uses sed for portable behavior across bash versions (bash 5.2 changed
-# & semantics in ${var//pat/rep} to act as a backreference).
-# Output goes to stdout.
+# _alert_html_escape str — escape & < > " ' for safe HTML embedding
+# Uses sed (not ${var//}) because bash 5.2 treats & as a backreference in replacements.
 _alert_html_escape() {
 	if [ -z "$1" ]; then
 		printf ''
@@ -173,10 +143,7 @@ _alert_html_escape() {
 		-e "s/'/\\&#39;/g"
 }
 
-# _alert_json_escape str — escape special characters for safe JSON string embedding
-# Handles: \ " newline tab carriage-return (\ first to avoid double-escaping)
-# Uses ${var//} parameter expansion — no & in replacements, safe on all bash versions.
-# Output goes to stdout (no trailing newline).
+# _alert_json_escape str — escape \ " \n \t \r for JSON string embedding
 _alert_json_escape() {
 	local s="$1"
 	s="${s//\\/\\\\}"
@@ -187,27 +154,21 @@ _alert_json_escape() {
 	printf '%s' "$s"
 }
 
-# _alert_telegram_escape str — escape Telegram MarkdownV2 special characters
-# Handles: \ _ * [ ] ( ) ~ ` > # + - = | { } . ! (\ first to avoid double-escaping)
-# Character list per Telegram Bot API: https://core.telegram.org/bots/api#markdownv2-style
-# Uses sed for consistent escaping approach across all alert_lib escape functions.
-# Output goes to stdout.
+# _alert_telegram_escape str — escape MarkdownV2 special chars
+# Character list per https://core.telegram.org/bots/api#markdownv2-style
 _alert_telegram_escape() {
 	if [ -z "$1" ]; then
 		printf ''
 		return 0
 	fi
-	# Escape backslash first, then all MarkdownV2 special chars via BRE character class.
-	# Class layout: ] first (BRE literal), [ next, remaining chars, - last (BRE literal).
+	# BRE character class layout: ] first (literal), [ next, remaining chars, - last (literal).
 	printf '%s' "$1" | sed \
 		-e 's/\\/\\\\/g' \
 		-e 's/[][_*()~`>#+=|{}.!-]/\\&/g'
 }
 
-# _alert_slack_escape str — escape Slack mrkdwn special characters
-# Handles: & < > → &amp; &lt; &gt; (& first to avoid double-escaping)
-# Uses sed because replacement strings contain & (bash 5.2 backreference issue).
-# Output goes to stdout.
+# _alert_slack_escape str — escape & < > for Slack mrkdwn
+# Uses sed (not ${var//}) because bash 5.2 treats & as a backreference in replacements.
 _alert_slack_escape() {
 	if [ -z "$1" ]; then
 		printf ''
@@ -219,12 +180,7 @@ _alert_slack_escape() {
 		-e 's/>/\&gt;/g'
 }
 
-# ---------------------------------------------------------------------------
-# HTTP Utilities
-# ---------------------------------------------------------------------------
-
-# _alert_validate_url url — validate URL has http:// or https:// scheme
-# Returns 0 if valid, 1 otherwise.
+# _alert_validate_url url — check for http:// or https:// scheme
 _alert_validate_url() {
 	case "${1:-}" in
 		http://*|https://*) return 0 ;;
@@ -232,10 +188,7 @@ _alert_validate_url() {
 	esac
 }
 
-# _alert_redact_url url — redact embedded tokens from webhook URLs
-# Slack webhooks: https://hooks.slack.com/services/T.../B.../TOKEN → .../[REDACTED]
-# Discord webhooks: https://discord.com/api/webhooks/ID/TOKEN → .../[REDACTED]
-# Non-secret URLs passed through unchanged.
+# _alert_redact_url url — strip tokens from Slack/Discord webhook URLs for logging
 _alert_redact_url() {
 	local url="$1"
 	if [[ "$url" == *"hooks.slack.com/services/"* ]]; then
@@ -248,11 +201,7 @@ _alert_redact_url() {
 }
 
 # _alert_curl_post url [curl_flags...] — HTTP POST via curl with standard timeouts
-# Discovers curl via command -v. Adds -s, --connect-timeout, --max-time, -X POST.
-# Remaining arguments pass through as extra curl flags (caller provides -d/-H/-F).
-# Stdout: curl response body (caller captures via $()).
-# Stderr: error detail on failure.
-# Returns 0 on success, 1 on failure.
+# Caller supplies -d/-H/-F; stdout carries the response body for capture via $().
 _alert_curl_post() {
 	local url="$1"
 	shift
@@ -277,19 +226,12 @@ _alert_curl_post() {
 	return 0
 }
 
-# ---------------------------------------------------------------------------
-# MIME Builder
-# ---------------------------------------------------------------------------
-
-# _alert_build_mime text_body html_body — construct multipart/alternative MIME message
-# Writes MIME headers and both text and HTML parts to stdout.
-# Caller is responsible for adding Subject/To/From headers before this output.
-# The boundary uses epoch + random suffix for uniqueness.
+# _alert_build_mime text_body html_body — write multipart/alternative MIME to stdout
+# Caller must emit Subject/To/From headers before this output.
 _alert_build_mime() {
 	local text_body="$1" html_body="$2"
 	local boundary
-	# Use /dev/urandom for unpredictable boundary suffix; fall back to PID
-	# if /dev/urandom is unavailable (sufficient for per-message uniqueness)
+	# /dev/urandom for unpredictable boundary; PID fallback is sufficient per-message
 	boundary="ALERT_$(date +%s)_$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 8 || echo "$$")"
 
 	echo "MIME-Version: 1.0"
@@ -311,13 +253,8 @@ _alert_build_mime() {
 	echo "--${boundary}--"
 }
 
-# ---------------------------------------------------------------------------
-# Email Delivery
-# ---------------------------------------------------------------------------
-
-# _alert_email_local recip subject text_file html_file format
-# Send alert via local MTA (mail/sendmail). Format: text, html, or both.
-# Returns 0 on success, 1 on failure.
+# _alert_email_local recip subject text_file html_file format — send via mail/sendmail
+# format: text, html, or both.
 _alert_email_local() {
 	local recip="$1" subject="$2" text_file="$3" html_file="$4" format="${5:-text}"
 	local from="${ALERT_SMTP_FROM:-root@$(hostname -f 2>/dev/null || hostname)}"
@@ -423,11 +360,8 @@ _alert_email_local() {
 }
 
 # _alert_email_relay recip subject msg_file — send via authenticated SMTP relay
-# msg_file must be a complete RFC 822 message (headers + body).
-# TLS handling: smtps:// always uses implicit TLS; smtp://:587 requires STARTTLS;
-# smtp://:25 connects plaintext (for internal relays). Credentials are optional
-# to support auth-free internal relays.
-# Returns 0 on success, 1 on failure.
+# msg_file must be a complete RFC 822 message. TLS: smtps:// and :587 require it,
+# :25 stays plaintext (internal relays). Credentials optional for auth-free relays.
 _alert_email_relay() {
 	local recip="$1" subject="$2" msg_file="$3"
 
@@ -442,10 +376,8 @@ _alert_email_relay() {
 		return 1
 	fi
 
-	# build curl arguments
 	local -a curl_args=("-s" "--url" "$ALERT_SMTP_RELAY")
 
-	# TLS: smtps:// and smtp://:587 require TLS; smtp://:25 is plain
 	case "$ALERT_SMTP_RELAY" in
 		smtps://*|smtp://*:587|smtp://*:587/*) curl_args+=("--ssl-reqd") ;;
 		smtp://*:25|smtp://*:25/*) ;;  # plain — no TLS for internal relays
@@ -454,8 +386,7 @@ _alert_email_relay() {
 
 	curl_args+=("--mail-from" "$ALERT_SMTP_FROM" "--mail-rcpt" "$recip")
 
-	# credentials via -K config file to keep them out of process listing
-	# (same pattern as _alert_telegram_api)
+	# -K config file keeps credentials out of process listing (same as _alert_telegram_api)
 	local smtp_cfg=""
 	if [ -n "${ALERT_SMTP_USER:-}" ] && [ -n "${ALERT_SMTP_PASS:-}" ]; then
 		smtp_cfg=$(mktemp "${ALERT_TMPDIR}/alert_smtp_auth.XXXXXX")
@@ -480,13 +411,10 @@ _alert_email_relay() {
 	return 0
 }
 
-# _alert_deliver_email recip subject text_file html_file format
-# Router: ALERT_SMTP_RELAY set -> relay path, else -> local MTA.
-# NOTE: The relay path always builds a full multipart/alternative MIME message
-# regardless of the format parameter. The format parameter only affects the
-# local MTA path (_alert_email_local). This is by design — relay delivery
-# constructs RFC 822 messages via _alert_build_mime which requires both parts.
-# Returns 0 on success, 1 on failure.
+# _alert_deliver_email recip subject text_file html_file format — router
+# ALERT_SMTP_RELAY set: relay path (always builds full multipart/alternative,
+# format parameter ignored — _alert_build_mime requires both parts).
+# Otherwise: local MTA path via _alert_email_local (format applies).
 _alert_deliver_email() {
 	local recip="$1" subject="$2" text_file="$3" html_file="$4" format="${5:-text}"
 
@@ -500,7 +428,6 @@ _alert_deliver_email() {
 	subject="${subject//$'\n'/}"
 
 	if [ -n "${ALERT_SMTP_RELAY:-}" ]; then
-		# relay path: always build full multipart MIME message
 		local from="${ALERT_SMTP_FROM:-root@$(hostname -f 2>/dev/null || hostname)}"
 		# Defense-in-depth: strip CR/LF from all header values to prevent injection
 		recip="${recip//$'\r'/}"
@@ -531,19 +458,11 @@ _alert_deliver_email() {
 		return $rc
 	fi
 
-	# local MTA path
 	_alert_email_local "$recip" "$subject" "$text_file" "$html_file" "$format"
 }
 
-# ---------------------------------------------------------------------------
-# Email Channel Handler
-# ---------------------------------------------------------------------------
-
-# _alert_handle_email subject text_file html_file [attachment]
-# Standardized handler wrapper for the email channel. Reads delivery config
-# from environment variables and delegates to _alert_deliver_email.
-# ALERT_EMAIL_TO: recipient address (default: root)
-# ALERT_EMAIL_FORMAT: text, html, or both (default: text)
+# _alert_handle_email subject text_file html_file [attachment] — email channel handler
+# Reads ALERT_EMAIL_TO (default: root) and ALERT_EMAIL_FORMAT (default: text).
 _alert_handle_email() {
 	local subject="$1" text_file="$2" html_file="$3"
 	local recip="${ALERT_EMAIL_TO:-root}"
@@ -551,12 +470,7 @@ _alert_handle_email() {
 	_alert_deliver_email "$recip" "$subject" "$text_file" "$html_file" "$format"
 }
 
-# ---------------------------------------------------------------------------
-# Slack Delivery
-# ---------------------------------------------------------------------------
-
 # _alert_slack_webhook payload_file webhook_url — POST JSON to Slack incoming webhook
-# Returns 0 on success, 1 on failure.
 _alert_slack_webhook() {
 	local payload_file="$1" webhook_url="$2"
 	if [ -z "$webhook_url" ] || ! _alert_validate_url "$webhook_url"; then
@@ -575,10 +489,7 @@ _alert_slack_webhook() {
 }
 
 # _alert_slack_post_message payload_file token channel — POST to chat.postMessage API
-# Injects "channel" field into JSON payload, sends to Slack Web API.
-# Token is written to a chmod 600 config file and passed via curl -K to keep
-# it out of the process listing (/proc/PID/cmdline).
-# Returns 0 on success, 1 on failure.
+# Token written to chmod 600 config and passed via curl -K to keep it out of /proc/PID/cmdline.
 _alert_slack_post_message() {
 	local payload_file="$1" token="$2" channel="$3"
 	if [ -z "$token" ]; then
@@ -593,15 +504,12 @@ _alert_slack_post_message() {
 		echo "alert_lib: payload file not found: ${payload_file:-<empty>}" >&2
 		return 1
 	fi
-	# Inject "channel" field after opening brace
-	# Uses awk instead of sed to avoid delimiter collision if channel
-	# contains / or & (sed s/// treats both as special characters)
+	# awk (not sed) for channel injection: sed s/// would collide with / or & in channel
 	local modified_payload escaped_channel
 	modified_payload=$(mktemp "${ALERT_TMPDIR}/alert_slack_msg.XXXXXX")
 	escaped_channel=$(_alert_json_escape "$channel")
 	ch="$escaped_channel" awk 'NR==1 && /^\{/ { print "{\"channel\":\"" ENVIRON["ch"] "\"," substr($0,2); next } { print }' \
 		"$payload_file" > "$modified_payload"
-	# Write token to config file — keeps it out of /proc/PID/cmdline
 	local auth_cfg
 	auth_cfg=$(mktemp "${ALERT_TMPDIR}/alert_sl_auth.XXXXXX")
 	chmod 600 "$auth_cfg"
@@ -612,7 +520,6 @@ _alert_slack_post_message() {
 		-H "Content-Type: application/json" \
 		-d @"$modified_payload") || { command rm -f "$modified_payload" "$auth_cfg"; return 1; }
 	command rm -f "$modified_payload" "$auth_cfg"
-	# Slack API returns {"ok":true,...} on success
 	case "$response" in
 		*'"ok":true'*) return 0 ;;
 	esac
@@ -623,12 +530,8 @@ _alert_slack_post_message() {
 }
 
 # _alert_slack_upload file_path title token channels — 3-step Slack file upload
-# Step 1: files.getUploadURLExternal → get upload_url + file_id
-# Step 2: POST file to upload_url
-# Step 3: files.completeUploadExternal → finalize and share to channels
-# Token is written to a chmod 600 config file and passed via curl -K to keep
-# it out of the process listing (/proc/PID/cmdline).
-# Returns 0 on success, 1 on failure.
+# Steps: files.getUploadURLExternal → POST to upload_url → files.completeUploadExternal.
+# Token written to chmod 600 config and passed via curl -K to keep it out of /proc/PID/cmdline.
 _alert_slack_upload() {
 	local file_path="$1" title="$2" token="$3" channels="$4"
 	if [ ! -f "$file_path" ]; then
@@ -644,7 +547,6 @@ _alert_slack_upload() {
 	fsize="${fsize##* }"  # trim whitespace (some wc implementations pad)
 	filename="${file_path##*/}"
 
-	# Write token to config file — keeps it out of /proc/PID/cmdline
 	local auth_cfg
 	auth_cfg=$(mktemp "${ALERT_TMPDIR}/alert_sl_auth.XXXXXX")
 	chmod 600 "$auth_cfg"
@@ -669,8 +571,8 @@ _alert_slack_upload() {
 	upload_url=$(printf '%s' "$url_response" | sed -n 's/.*"upload_url" *: *"\([^"]*\)".*/\1/p')
 	file_id=$(printf '%s' "$url_response" | sed -n 's/.*"file_id" *: *"\([^"]*\)".*/\1/p')
 
-	# Validate upload URL is HTTPS (defense-in-depth: reject http, file, ftp, etc.)
-	# Case-insensitive match: MITM attacker could use any casing (${var,,} prohibited on bash 4.1)
+	# Defense-in-depth: reject non-https schemes (http, file, ftp, ...).
+	# Case-insensitive match — ${var,,} is prohibited on bash 4.1 floor.
 	case "$upload_url" in
 		[hH][tT][tT][pP][sS]://*)
 			;;
@@ -708,10 +610,7 @@ _alert_slack_upload() {
 }
 
 # _alert_deliver_slack payload_file [attachment_file] — route Slack delivery
-# ALERT_SLACK_MODE: webhook (default) or bot.
-# webhook mode: uses ALERT_SLACK_WEBHOOK_URL
-# bot mode: uses ALERT_SLACK_TOKEN + ALERT_SLACK_CHANNEL
-# Returns 0 on success, 1 on failure.
+# ALERT_SLACK_MODE: webhook (ALERT_SLACK_WEBHOOK_URL) or bot (ALERT_SLACK_TOKEN + ALERT_SLACK_CHANNEL).
 _alert_deliver_slack() {
 	local payload_file="$1" attachment="${2:-}"
 	local mode="${ALERT_SLACK_MODE:-webhook}"
@@ -749,28 +648,15 @@ _alert_deliver_slack() {
 	esac
 }
 
-# ---------------------------------------------------------------------------
-# Slack Channel Handler
-# ---------------------------------------------------------------------------
-
-# _alert_handle_slack subject text_file html_file [attachment]
-# Standardized handler wrapper for the Slack channel. The rendered text_file
-# (from slack.text.tpl or slack.message.tpl) is the JSON payload for Slack.
-# Ignores subject and html_file (already baked into rendered template).
+# _alert_handle_slack subject text_file html_file [attachment] — Slack channel handler
+# text_file is the rendered JSON payload; subject and html_file are ignored (baked in).
 _alert_handle_slack() {
 	local text_file="$2" attachment="${4:-}"
 	_alert_deliver_slack "$text_file" "$attachment"
 }
 
-# ---------------------------------------------------------------------------
-# Telegram Delivery
-# ---------------------------------------------------------------------------
-
 # _alert_telegram_api endpoint bot_token [curl_flags...] — shared Bot API helper
-# Uses curl -K (config file) to keep bot token out of the process listing.
-# Config file created with chmod 600, removed immediately after curl returns.
-# Stdout: API response body on success. Stderr: error detail on failure.
-# Returns 0 on success, 1 on failure.
+# curl -K config file (chmod 600, deleted after curl) keeps bot token out of /proc/PID/cmdline.
 _alert_telegram_api() {
 	local endpoint="$1" bot_token="$2"
 	shift 2
@@ -794,7 +680,6 @@ _alert_telegram_api() {
 		echo "alert_lib: Telegram API curl failed (exit $rc)." >&2
 		return 1
 	fi
-	# Check API response for success
 	case "$response" in
 		*'"ok":true'*)
 			printf '%s' "$response"
@@ -807,9 +692,7 @@ _alert_telegram_api() {
 	return 1
 }
 
-# _alert_telegram_message text bot_token chat_id — send text via sendMessage
-# Uses MarkdownV2 parse mode. All parameters passed as form fields (-F).
-# Returns 0 on success, 1 on failure.
+# _alert_telegram_message text bot_token chat_id — send text via sendMessage (MarkdownV2)
 _alert_telegram_message() {
 	local text="$1" bot_token="$2" chat_id="$3"
 	if [ -z "$bot_token" ]; then
@@ -831,8 +714,6 @@ _alert_telegram_message() {
 }
 
 # _alert_telegram_document file_path caption bot_token chat_id — send file via sendDocument
-# Extracted from LMD inline Telegram code. Caption conditionally included.
-# Returns 0 on success, 1 on failure.
 _alert_telegram_document() {
 	local file_path="$1" caption="$2" bot_token="$3" chat_id="$4"
 	if [ ! -f "$file_path" ]; then
@@ -860,10 +741,7 @@ _alert_telegram_document() {
 }
 
 # _alert_deliver_telegram payload_file [attachment_file] — route Telegram delivery
-# Reads payload_file content as message text. Sends message first, then optional
-# document attachment. Message failure stops before document attempt.
-# Nonexistent attachment file silently skipped (matches Slack pattern).
-# Returns 0 on success, 1 on failure.
+# Message sent first; attachment only on message success. Missing attachment silently skipped.
 _alert_deliver_telegram() {
 	local payload_file="$1" attachment="${2:-}"
 	if [ -z "${ALERT_TELEGRAM_BOT_TOKEN:-}" ]; then
@@ -883,26 +761,15 @@ _alert_deliver_telegram() {
 	return 0
 }
 
-# ---------------------------------------------------------------------------
-# Telegram Channel Handler
-# ---------------------------------------------------------------------------
-
-# _alert_handle_telegram subject text_file html_file [attachment]
-# Standardized handler wrapper for the Telegram channel. Passes text_file
-# as payload and attachment through to _alert_deliver_telegram.
-# Ignores subject and html_file (baked into rendered template).
+# _alert_handle_telegram subject text_file html_file [attachment] — Telegram channel handler
+# text_file is the payload; subject and html_file are ignored (baked in).
 _alert_handle_telegram() {
 	local text_file="$2" attachment="${4:-}"
 	_alert_deliver_telegram "$text_file" "$attachment"
 }
 
-# ---------------------------------------------------------------------------
-# Discord Delivery
-# ---------------------------------------------------------------------------
-
 # _alert_discord_webhook payload_file webhook_url — POST JSON to Discord webhook
 # Discord returns HTTP 204 with empty body on success (no ?wait=true).
-# Returns 0 on success, 1 on failure.
 _alert_discord_webhook() {
 	local payload_file="$1" webhook_url="$2"
 	if [ -z "$webhook_url" ] || ! _alert_validate_url "$webhook_url"; then
@@ -912,8 +779,7 @@ _alert_discord_webhook() {
 	local response
 	response=$(_alert_curl_post "$webhook_url" \
 		-H "Content-Type: application/json" -d @"$payload_file") || return 1
-	# Discord webhooks return HTTP 204 (empty body) on success,
-	# or a message object with "id": when returning content
+	# Success: empty body (HTTP 204) or message object with "id":
 	case "$response" in
 		""|*'"id":'*) return 0 ;;
 	esac
@@ -925,7 +791,6 @@ _alert_discord_webhook() {
 
 # _alert_discord_upload file_path payload_file webhook_url — multipart file upload
 # Single POST with payload_json + files[0] (unlike Slack's 3-step flow).
-# Returns 0 on success, 1 on failure.
 _alert_discord_upload() {
 	local file_path="$1" payload_file="$2" webhook_url="$3"
 	if [ ! -f "$file_path" ]; then
@@ -939,7 +804,6 @@ _alert_discord_upload() {
 	local response
 	response=$(_alert_curl_post "$webhook_url" \
 		-F "payload_json=<$payload_file" -F "files[0]=@$file_path") || return 1
-	# Same success detection as webhook: empty body or message object
 	case "$response" in
 		""|*'"id":'*) return 0 ;;
 	esac
@@ -950,9 +814,7 @@ _alert_discord_upload() {
 }
 
 # _alert_deliver_discord payload_file [attachment_file] — route Discord delivery
-# Uses ALERT_DISCORD_WEBHOOK_URL env var. If attachment exists, uses multipart
-# upload; otherwise plain JSON webhook POST.
-# Returns 0 on success, 1 on failure.
+# Uses ALERT_DISCORD_WEBHOOK_URL; multipart if attachment exists, else plain JSON POST.
 _alert_deliver_discord() {
 	local payload_file="$1" attachment="${2:-}"
 	if [ -z "${ALERT_DISCORD_WEBHOOK_URL:-}" ]; then
@@ -966,28 +828,16 @@ _alert_deliver_discord() {
 	fi
 }
 
-# ---------------------------------------------------------------------------
-# Discord Channel Handler
-# ---------------------------------------------------------------------------
-
-# _alert_handle_discord subject text_file html_file [attachment]
-# Standardized handler wrapper for the Discord channel. Passes text_file
-# as payload and attachment through to _alert_deliver_discord.
-# Ignores subject and html_file (baked into rendered template).
+# _alert_handle_discord subject text_file html_file [attachment] — Discord channel handler
+# text_file is the payload; subject and html_file are ignored (baked in).
 _alert_handle_discord() {
 	local text_file="$2" attachment="${4:-}"
 	_alert_deliver_discord "$text_file" "$attachment"
 }
 
-# ---------------------------------------------------------------------------
-# Digest/Spool System
-# ---------------------------------------------------------------------------
-
 # _alert_spool_append data_file spool_file — append timestamped entries to digest spool
-# Prepends current epoch to each non-blank line of data_file and appends to
-# spool_file under exclusive flock (10s timeout).
-# No-op if data_file is empty or missing (not an error condition).
-# Returns 0 on success, 1 on failure.
+# Each non-blank line is prefixed with epoch| under exclusive flock (10s timeout).
+# No-op if data_file is empty or missing.
 _alert_spool_append() {
 	local data_file="$1" spool_file="$2"
 	if [ ! -f "$data_file" ] || [ ! -s "$data_file" ]; then
@@ -1019,10 +869,7 @@ _alert_spool_append() {
 }
 
 # _alert_digest_check spool_file interval flush_callback — flush spool if age >= interval
-# Reads first line's epoch for age check (optimistic, no lock needed — worst
-# case is delayed flush). If age >= interval seconds, calls _alert_digest_flush.
-# No-op if spool is empty, missing, or has no valid epoch.
-# Returns 0 on success (including no-op), propagates flush exit code on flush.
+# Reads first line's epoch unlocked — worst case is a delayed flush.
 _alert_digest_check() {
 	local spool_file="$1" interval="$2" flush_callback="$3"
 	if [ -z "$spool_file" ]; then
@@ -1055,12 +902,8 @@ _alert_digest_check() {
 }
 
 # _alert_digest_flush spool_file flush_callback — force-flush accumulated entries
-# Under exclusive flock: strips epoch prefix (cut -d'|' -f2-), copies to temp
-# flush file, truncates spool (preserves inode). Releases lock before calling
-# flush_callback to avoid holding flock during delivery.
-# Callback receives one argument: path to temp file with flushed entries.
-# No-op if spool is empty or missing.
-# Returns callback's exit code (0 on success, non-zero on failure).
+# Releases flock before invoking flush_callback (avoids holding lock during delivery).
+# Callback receives one argument: the temp file with flushed entries (epoch prefix stripped).
 _alert_digest_flush() {
 	local spool_file="$1" flush_callback="$2"
 	if [ -z "$spool_file" ]; then
@@ -1088,13 +931,13 @@ _alert_digest_flush() {
 			echo "alert_lib: digest flush lock timeout." >&2
 			exit 1
 		}
-		# Re-check spool non-empty under lock (another process may have flushed)
+		# Re-check under lock — another process may have flushed between our size
+		# check above and lock acquisition.
 		if [ ! -s "$spool_file" ]; then
 			exit 0
 		fi
-		# Strip epoch prefix — callback expects original data format
 		cut -d'|' -f2- "$spool_file" > "$flush_file"
-		# Truncate spool (preserves inode for inotifywait/tail -f consumers)
+		# Truncate (not unlink) preserves inode for inotifywait/tail -f consumers
 		: > "$spool_file"
 	) 200>"$lock_file"
 	local sub_rc=$?
@@ -1102,7 +945,6 @@ _alert_digest_flush() {
 		command rm -f "$flush_file"
 		return "$sub_rc"
 	fi
-	# Call callback OUTSIDE lock to avoid holding flock during delivery
 	local rc=0
 	if [ -s "$flush_file" ]; then
 		"$flush_callback" "$flush_file" || rc=$?
@@ -1111,20 +953,11 @@ _alert_digest_flush() {
 	return $rc
 }
 
-# ---------------------------------------------------------------------------
-# Multi-Channel Dispatch
-# ---------------------------------------------------------------------------
-
-# alert_dispatch template_dir subject [channels] [attachment_file]
-# Render per-channel templates and dispatch to all enabled channels.
-# channels: comma-separated channel names or "all" (default: "all").
-# For each enabled channel, resolves $channel.text.tpl (falling back to
-# $channel.message.tpl) and $channel.html.tpl from template_dir, renders
-# via _alert_tpl_render, then calls the channel handler with:
-#   handler_fn subject text_file html_file [attachment]
-# Channels with no matching templates are skipped with a warning.
-# Returns 0 if all dispatched channels succeed, 1 if any fail.
-# Continues dispatching after individual channel failures.
+# alert_dispatch template_dir subject [channels] [attachment_file] — dispatch to enabled channels
+# channels: comma-separated list or "all" (default). Per channel, resolves
+# $name.text.tpl (fallback $name.message.tpl) + $name.html.tpl from template_dir,
+# renders via _alert_tpl_render, then calls handler_fn subject text_file html_file [attachment].
+# Continues after individual failures; returns 1 if any channel failed.
 alert_dispatch() {
 	local template_dir="$1" subject="$2" channels="${3:-all}" attachment="${4:-}"
 	local rc=0
@@ -1136,10 +969,8 @@ alert_dispatch() {
 		handler="${_ALERT_CHANNEL_HANDLERS[$i]}"
 		enabled="${_ALERT_CHANNEL_ENABLED[$i]}"
 
-		# Skip disabled channels
 		[ "$enabled" = "1" ] || continue
 
-		# Filter by channel name (unless "all")
 		if [ "$channels" != "all" ]; then
 			case ",$channels," in
 				*",$name,"*) ;;
@@ -1147,13 +978,13 @@ alert_dispatch() {
 			esac
 		fi
 
-		# Resolve text template: try $channel.text.tpl, fall back to $channel.message.tpl
 		text_file=""
 		_alert_tpl_resolve "$template_dir" "${name}.text.tpl"
 		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
 			text_file=$(mktemp "${ALERT_TMPDIR}/alert_${name}_text.XXXXXX")
 			_alert_tpl_render "$_ALERT_TPL_RESOLVED" > "$text_file"
 		else
+			# Fall back to $name.message.tpl when $name.text.tpl is absent
 			_alert_tpl_resolve "$template_dir" "${name}.message.tpl"
 			if [ -f "$_ALERT_TPL_RESOLVED" ]; then
 				text_file=$(mktemp "${ALERT_TMPDIR}/alert_${name}_text.XXXXXX")
@@ -1161,7 +992,6 @@ alert_dispatch() {
 			fi
 		fi
 
-		# Resolve html template (optional)
 		html_file=""
 		_alert_tpl_resolve "$template_dir" "${name}.html.tpl"
 		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
@@ -1169,13 +999,12 @@ alert_dispatch() {
 			_alert_tpl_render "$_ALERT_TPL_RESOLVED" > "$html_file"
 		fi
 
-		# Skip channels with no templates
 		if [ -z "$text_file" ] && [ -z "$html_file" ]; then
 			echo "alert_lib: no templates found for channel '$name', skipping." >&2
 			continue
 		fi
 
-		# Create empty placeholders for missing variants so handlers get valid paths
+		# Empty placeholders for missing variants so handlers always get valid paths
 		if [ -z "$text_file" ]; then
 			text_file=$(mktemp "${ALERT_TMPDIR}/alert_${name}_text.XXXXXX")
 		fi
@@ -1183,25 +1012,18 @@ alert_dispatch() {
 			html_file=$(mktemp "${ALERT_TMPDIR}/alert_${name}_html.XXXXXX")
 		fi
 
-		# Call handler
 		if ! "$handler" "$subject" "$text_file" "$html_file" "$attachment"; then
 			echo "alert_lib: channel '$name' delivery failed." >&2
 			rc=1
 		fi
 
-		# Clean up rendered temp files
 		command rm -f "$text_file" "$html_file"
 	done
 
 	return $rc
 }
 
-# ---------------------------------------------------------------------------
-# Built-in Channel Registration
-# ---------------------------------------------------------------------------
-
-# Register built-in channels — consumers enable via alert_channel_enable "<name>"
-# All built-in channels start disabled. Consuming projects enable the ones they need.
+# Built-in channels start disabled; consumers enable via alert_channel_enable "<name>".
 alert_channel_register "email" "_alert_handle_email"
 alert_channel_register "slack" "_alert_handle_slack"
 alert_channel_register "telegram" "_alert_handle_telegram"

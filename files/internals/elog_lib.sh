@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# elog_lib.sh — Structured Event Logging Library 1.0.5
+# elog_lib.sh — Structured Event Logging Library 1.0.6
 ###
 # Copyright (C) 2002-2026 R-fx Networks <proj@rfxn.com>
 #                         Ryan MacDonald <ryan@rfxn.com>
@@ -29,54 +29,11 @@
 [[ -n "${_ELOG_LIB_LOADED:-}" ]] && return 0 2>/dev/null  # suppress error when executed (not sourced)
 _ELOG_LIB_LOADED=1
 # shellcheck disable=SC2034 # version checked by consumers
-ELOG_LIB_VERSION="1.0.5"
+ELOG_LIB_VERSION="1.0.6"
 
-# --- Configuration variables (set by consumer before sourcing) ---
-# All use ${VAR:-default} — safe when sourced from inside functions (BATS).
-#
-# ELOG_APP          — app name in log lines (default: basename $0)
-# ELOG_LOG_DIR      — log directory path (default: /var/log/${ELOG_APP})
-# ELOG_LOG_FILE     — primary log file path (default: ${ELOG_LOG_DIR}/${ELOG_APP}.log)
-# ELOG_AUDIT_FILE   — audit log file path, always JSONL (default: ${ELOG_LOG_DIR}/audit.log)
-# ELOG_SYSLOG_FILE  — secondary syslog output file (empty = disabled)
-# ELOG_LEGACY_LOG   — old log path; elog_init() creates symlink to new path
-# ELOG_LEVEL        — minimum severity: 0=debug 1=info 2=warn 3=error 4=critical (default: 1)
-# ELOG_VERBOSE      — when "1", debug-level messages emit to stdout (default: 0)
-# ELOG_FORMAT       — "classic" or "json" (default: classic)
-# ELOG_TS_FORMAT    — date strftime format (default: "%b %e %H:%M:%S"); must not contain "|"
-# ELOG_STDOUT       — "always"|"never"|"flag" (default: always)
-# ELOG_STDOUT_PREFIX — "full"|"short"|"none" (default: full)
-# ELOG_LOG_MAX_LINES — max lines in app log before truncation (0 = disabled)
-# ELOG_AUDIT_MAX_LINES — max lines in audit log before truncation (0 = disabled)
-# ELOG_ROTATE_FREQUENCY — logrotate frequency (default: weekly)
-# ELOG_ROTATE_COUNT — logrotate keep count (default: 12)
-# ELOG_ROTATE_COMPRESS — logrotate compress (default: compress)
-#
-# SIEM / CEF output:
-# ELOG_CEF_VENDOR      — CEF vendor field (default: "R-fx Networks")
-# ELOG_CEF_PRODUCT     — CEF product field (default: $ELOG_APP)
-# ELOG_CEF_VERSION     — CEF product version field (default: $ELOG_LIB_VERSION)
-# ELOG_CEF_FILE        — CEF output file path (empty = no file output)
-#
-# SIEM / Syslog UDP output:
-# ELOG_SYSLOG_UDP_HOST     — target syslog server (empty = disabled)
-# ELOG_SYSLOG_UDP_PORT     — target syslog port (default: 514)
-# ELOG_SYSLOG_UDP_FACILITY — syslog facility code 0-23 (default: 1 = user)
-# ELOG_SYSLOG_UDP_FORMAT   — "5424" or "3164" (default: 5424)
-# ELOG_SYSLOG_UDP_PAYLOAD  — payload format: "classic", "json", or "cef" (default: classic)
-#
-# SIEM / GELF output (Graylog Extended Log Format):
-# ELOG_GELF_HOST      — Graylog server (empty = no-op)
-# ELOG_GELF_PORT      — Graylog input port (default: 12201)
-# ELOG_GELF_TRANSPORT — "udp" or "http" (default: udp)
-# ELOG_GELF_FILE      — capture file for testing/debug (empty = disabled)
-#
-# SIEM / ELK JSON output (ECS-aligned):
-# ELOG_ELK_URL   — Elasticsearch ingest URL (empty = no-op)
-# ELOG_ELK_INDEX — target index name (default: elog-events)
-# ELOG_ELK_FILE  — capture file for testing/debug (empty = disabled)
+# Config vars consulted at use site via ${VAR:-default} — safe when sourced
+# from inside functions (e.g. BATS). See README.md § 3. Configuration.
 
-# --- Internal state ---
 _ELOG_INIT_DONE=0
 _ELOG_WRITE_COUNT=0
 _ELOG_AUDIT_WRITE_COUNT=0
@@ -106,10 +63,7 @@ _ELOG_UDP_METHOD=""
 # HTTP delivery method — detected at init or first use (curl, wget, or none)
 _ELOG_HTTP_METHOD=""
 
-# --- Internal functions ---
-
-# _elog_level_num(name) — maps level name to numeric value
-# Returns: 0=debug, 1=info, 2=warn, 3=error, 4=critical; unknown defaults to 1
+# _elog_level_num(name) — maps level name to numeric value (unknown → info)
 _elog_level_num() {
 	case "${1:-info}" in
 		debug)    _ELOG_RET=0 ;;
@@ -133,10 +87,9 @@ _elog_level_name() {
 	esac
 }
 
-# _elog_json_escape(str) — escape string for safe JSON embedding
-# Handles C0 control characters (0x01-0x1F) per RFC 8259 §7:
-# Named escapes for 5 chars + backslash + double-quote, then \uXXXX sweep for remaining 26.
-# NUL (0x00) is unreachable — bash cannot store NUL bytes in variables.
+# _elog_json_escape(str) — escape string for safe JSON embedding per RFC 8259 §7
+# Named escapes for \ " \n \t \r \b \f, then \uXXXX sweep for remaining C0
+# control chars (0x01-0x1F). NUL (0x00) unreachable: bash cannot store NUL bytes.
 _elog_json_escape() {
 	_ELOG_RET="$1"
 	_ELOG_RET="${_ELOG_RET//\\/\\\\}"
@@ -146,16 +99,12 @@ _elog_json_escape() {
 	_ELOG_RET="${_ELOG_RET//$'\r'/\\r}"
 	_ELOG_RET="${_ELOG_RET//$'\x08'/\\b}"
 	_ELOG_RET="${_ELOG_RET//$'\x0c'/\\f}"
-	# Sweep remaining C0 control characters to \uXXXX per RFC 8259
-	# Named escapes handle: 08(bs) 09(tab) 0a(lf) 0c(ff) 0d(cr)
-	# NUL (0x00) omitted: bash cannot store NUL bytes in variables
 	local _c
 	for _c in $'\x01' $'\x02' $'\x03' $'\x04' $'\x05' $'\x06' $'\x07' \
 	          $'\x0b' $'\x0e' $'\x0f' $'\x10' $'\x11' $'\x12' $'\x13' $'\x14' \
 	          $'\x15' $'\x16' $'\x17' $'\x18' $'\x19' $'\x1a' $'\x1b' $'\x1c' \
 	          $'\x1d' $'\x1e' $'\x1f'; do
 		if [[ "$_ELOG_RET" == *"$_c"* ]]; then
-			# printf to get the hex code for this byte
 			local _hex
 			_hex=$(printf '%04x' "'$_c")
 			_ELOG_RET="${_ELOG_RET//$_c/\\u$_hex}"
@@ -163,9 +112,8 @@ _elog_json_escape() {
 	done
 }
 
-# _elog_parse_extras(extras, callback_fn) — parse space-delimited key=value pairs
-# Calls callback_fn with (key, val) for each valid pair.
-# Strips trailing newlines from here-string, skips pairs without = or empty keys.
+# _elog_parse_extras(extras, callback_fn) — parse space-delimited key=val pairs
+# Invokes callback_fn(key, val) per valid pair; skips malformed or empty-key pairs.
 _elog_parse_extras() {
 	local _extras="$1" _callback="$2"
 	[ -z "$_extras" ] && return 0
@@ -180,8 +128,7 @@ _elog_parse_extras() {
 	done <<< "$_extras"
 }
 
-# _elog_extract_tag(msg) — extract {tag} prefix from message
-# Returns the tag name (without braces), or empty if no tag found
+# _elog_extract_tag(msg) — extract {tag} prefix from message (empty if absent)
 _elog_extract_tag() {
 	local msg="$1"
 	local tag_pat='^\{([^}]+)\}'
@@ -203,22 +150,15 @@ _elog_strip_tag() {
 	fi
 }
 
-# _elog_resolve_hostname — resolve and cache hostname (FQDN with fallback)
-# Sets _ELOG_HOSTNAME on first call; subsequent calls are no-ops
+# _elog_resolve_hostname — resolve and cache FQDN into _ELOG_HOSTNAME (idempotent)
 _elog_resolve_hostname() {
 	[ -n "$_ELOG_HOSTNAME" ] && return 0
 	_ELOG_HOSTNAME=$(hostname -f 2>/dev/null || hostname -s 2>/dev/null || hostname)  # fallback chain for all target OSes
 }
 
-# ---------------------------------------------------------------------------
-# Log File Architecture
-# ---------------------------------------------------------------------------
-
-# elog_init() — initialize log environment
-# Creates log directory, touches log files, sets permissions, creates legacy
-# symlinks, auto-enables file and audit_file output modules.
-# Call once at consumer startup after setting ELOG_APP.
-# Returns 0 on success, 1 on failure (directory creation failed).
+# elog_init() — initialize log environment; call once after setting ELOG_APP
+# Auto-enables file, audit_file, and syslog_file modules — does NOT enable stdout
+# (daemon-mode default). Sets ELOG_LOG_DIR/FILE/AUDIT_FILE back into env.
 elog_init() {
 	local _app="${ELOG_APP:-${0##*/}}"
 	local _log_dir="${ELOG_LOG_DIR:-/var/log/${_app}}"
@@ -227,17 +167,15 @@ elog_init() {
 	# to disable audit logging — distinguishes unset from empty
 	local _audit_file="${ELOG_AUDIT_FILE-${_log_dir}/audit.log}"
 
-	# Export computed paths back to env for consumers
 	ELOG_LOG_DIR="$_log_dir"
 	ELOG_LOG_FILE="$_log_file"
 	ELOG_AUDIT_FILE="$_audit_file"
 
-	# Restrictive umask during file creation (restore after)
+	# Restrictive umask during file creation (restored after)
 	local _old_umask
 	_old_umask=$(umask)
 	umask 027
 
-	# Create log directory
 	if [ ! -d "$_log_dir" ]; then
 		if ! mkdir -p "$_log_dir" 2>/dev/null; then  # suppress permission errors; failure handled below
 			echo "elog_lib: failed to create log directory: $_log_dir" >&2
@@ -247,7 +185,7 @@ elog_init() {
 		chmod 750 "$_log_dir"
 	fi
 
-	# Touch log files with correct permissions; enforce 640 on existing files
+	# Enforce 640 on existing files even when touch is skipped
 	local _f
 	for _f in "$_log_file" "$_audit_file"; do
 		[ -z "$_f" ] && continue  # skip empty paths (audit disabled)
@@ -271,7 +209,6 @@ elog_init() {
 		fi
 	fi
 
-	# Auto-enable output modules
 	if [ -n "$_log_file" ]; then
 		elog_output_enable "file" 2>/dev/null || true  # safe: module may not be registered yet
 	fi
@@ -299,8 +236,7 @@ elog_init() {
 	return 0
 }
 
-# elog_logrotate_snippet() — output logrotate config to stdout
-# Consumer pipes to /etc/logrotate.d/<project>
+# elog_logrotate_snippet() — emit logrotate config to stdout (pipe to /etc/logrotate.d/<project>)
 elog_logrotate_snippet() {
 	local _app="${ELOG_APP:-${0##*/}}"
 	local _log_dir="${ELOG_LOG_DIR:-/var/log/${_app}}"
@@ -396,10 +332,6 @@ _elog_auto_enable() {
 	_ELOG_INIT_DONE=1
 }
 
-# ---------------------------------------------------------------------------
-# Output Module Registry
-# ---------------------------------------------------------------------------
-
 # Parallel indexed arrays (no declare -A — breaks when sourced from functions)
 _ELOG_OUTPUT_NAMES=()
 _ELOG_OUTPUT_HANDLERS=()
@@ -407,9 +339,7 @@ _ELOG_OUTPUT_ENABLED=()
 _ELOG_OUTPUT_FORMATS=()
 _ELOG_OUTPUT_SOURCES=()
 
-# _elog_output_find name — locate output module index by name
-# Sets _ELOG_OUTPUT_IDX on success (avoids subshell fork).
-# Returns 0 if found, 1 if not found.
+# _elog_output_find name — locate module index; sets _ELOG_OUTPUT_IDX (no subshell)
 _elog_output_find() {
 	local name="$1"
 	local i
@@ -424,10 +354,7 @@ _elog_output_find() {
 }
 
 # elog_output_register name handler_fn format source — register an output module
-# Appends to parallel indexed arrays. Module starts disabled (enabled=0).
-# format: "classic", "json", "cef", "gelf", "elk"
-# source: "all" (elog+event), "elog" (app log only), "event" (structured events only)
-# Returns 1 if name is empty, handler_fn is empty, or name already registered.
+# format ∈ {classic,json,cef,gelf,elk}; source ∈ {all,elog,event}. Starts disabled.
 elog_output_register() {
 	local name="$1" handler_fn="$2" format="${3:-classic}" source="${4:-all}"
 	if [ -z "$name" ]; then
@@ -451,7 +378,6 @@ elog_output_register() {
 }
 
 # elog_output_enable name — mark output module as active
-# Returns 1 if module not registered.
 elog_output_enable() {
 	local name="$1"
 	if ! _elog_output_find "$name"; then
@@ -463,7 +389,6 @@ elog_output_enable() {
 }
 
 # elog_output_disable name — mark output module as inactive
-# Returns 1 if module not registered.
 elog_output_disable() {
 	local name="$1"
 	if ! _elog_output_find "$name"; then
@@ -474,8 +399,7 @@ elog_output_disable() {
 	return 0
 }
 
-# elog_output_enabled name — check if output module is active
-# Returns 0 if enabled, 1 if disabled or not found.
+# elog_output_enabled name — 0 if active, 1 if disabled or not registered
 elog_output_enabled() {
 	local name="$1"
 	if ! _elog_output_find "$name"; then
@@ -488,10 +412,6 @@ elog_output_enabled() {
 _elog_module_active() {
 	[ "${_ELOG_OUTPUT_ENABLED[$1]}" = "1" ]
 }
-
-# ---------------------------------------------------------------------------
-# Built-in Output Handlers
-# ---------------------------------------------------------------------------
 
 # _elog_safe_append(file, line) — append with symlink guard
 # Refuses to write through symlinks to prevent log-target hijacking.
@@ -512,8 +432,7 @@ _elog_out_file() {
 	fi
 }
 
-# _elog_out_audit formatted_line — append JSONL to ELOG_AUDIT_FILE
-# Always writes JSON regardless of ELOG_FORMAT setting
+# _elog_out_audit formatted_line — append JSONL to ELOG_AUDIT_FILE (always JSON regardless of ELOG_FORMAT)
 _elog_out_audit() {
 	local _line="$1"
 	if [ -n "${ELOG_AUDIT_FILE:-}" ]; then
@@ -529,9 +448,7 @@ _elog_out_syslog_file() {
 	fi
 }
 
-# _elog_out_stdout formatted_line level msg — output to terminal
-# Respects ELOG_STDOUT and ELOG_STDOUT_PREFIX settings.
-# $2=level, $3=msg, $4=stdout_flag (for flag mode)
+# _elog_out_stdout line level msg stdout_flag — terminal output (ELOG_STDOUT/_PREFIX)
 _elog_out_stdout() {
 	local _line="$1" _level="$2" _msg="$3" _stdout_flag="${4:-}"
 	local _stdout="${ELOG_STDOUT:-always}"
@@ -553,10 +470,6 @@ _elog_out_stdout() {
 		none)  echo "$_msg" ;;
 	esac
 }
-
-# ---------------------------------------------------------------------------
-# CEF Output Module
-# ---------------------------------------------------------------------------
 
 # _elog_severity_cef(level) — map elog level name to CEF severity (0-10)
 _elog_severity_cef() {
@@ -601,17 +514,16 @@ _elog_fmt_cef() {
 	_elog_severity_cef "$_level"
 	_sev="$_ELOG_RET"
 
-	# SignatureId: header-escaped type for defensive correctness
+	# SignatureId: header-escape the type for defensive correctness
 	local _sig_id
 	_elog_cef_escape_header "$_type"
 	_sig_id="$_ELOG_RET"
 
-	# Name field: first 128 chars of message, header-escaped
+	# CEF Name field capped at 128 chars per spec
 	local _trunc_msg="${_msg:0:128}"
 	_elog_cef_escape_header "$_trunc_msg"
 	_name="$_ELOG_RET"
 
-	# Build extension from tag + extras
 	_ext=""
 	if [ -n "$_tag" ]; then
 		local _esc_tag
@@ -646,10 +558,6 @@ _elog_out_cef() {
 		_elog_safe_append "$ELOG_CEF_FILE" "$_line"
 	fi
 }
-
-# ---------------------------------------------------------------------------
-# Syslog UDP Output Module
-# ---------------------------------------------------------------------------
 
 # _elog_severity_syslog(level) — map elog level name to syslog severity (0-7)
 _elog_severity_syslog() {
@@ -711,14 +619,11 @@ _elog_udp_send() {
 _elog_out_syslog_udp() {
 	local _line="$1"
 
-	# Guard: no host configured = no-op
 	[ -z "${ELOG_SYSLOG_UDP_HOST:-}" ] && return 0
 
-	# Lazy UDP detection if not yet probed
 	if [ -z "$_ELOG_UDP_METHOD" ]; then
 		_elog_udp_detect
 	fi
-	# No transport available — silent no-op
 	[ "$_ELOG_UDP_METHOD" = "none" ] && return 0
 
 	local _facility="${ELOG_SYSLOG_UDP_FACILITY:-1}"
@@ -735,15 +640,13 @@ _elog_out_syslog_udp() {
 	_app="${ELOG_APP:-${0##*/}}"
 	_pid="$$"
 
-	# Select payload based on ELOG_SYSLOG_UDP_PAYLOAD config
 	local _payload="$_line"
 	local _payload_type="${ELOG_SYSLOG_UDP_PAYLOAD:-classic}"
-	# cef payload requires cef module enabled; falls back to classic if _ELOG_STAGE_CEF empty
+	# cef payload falls back to classic when _ELOG_STAGE_CEF is empty (cef module disabled)
 	if [ "$_payload_type" = "cef" ] && [ -n "$_ELOG_STAGE_CEF" ]; then
 		_payload="$_ELOG_STAGE_CEF"
 	fi
 
-	# Build syslog frame
 	local _syslog_line
 	local _format="${ELOG_SYSLOG_UDP_FORMAT:-5424}"
 	if [ "$_format" = "3164" ]; then
@@ -756,10 +659,6 @@ _elog_out_syslog_udp() {
 
 	_elog_udp_send "${ELOG_SYSLOG_UDP_HOST}" "${ELOG_SYSLOG_UDP_PORT:-514}" "$_syslog_line"
 }
-
-# ---------------------------------------------------------------------------
-# HTTP Delivery Infrastructure
-# ---------------------------------------------------------------------------
 
 # _elog_http_detect() — probe for curl/wget at init time
 # Sets _ELOG_HTTP_METHOD to "curl", "wget", or "none"
@@ -778,11 +677,9 @@ _elog_http_detect() {
 _elog_http_send() {
 	local _url="$1" _payload="$2" _content_type="${3:-application/json}"
 
-	# Lazy HTTP detection if not yet probed
 	if [ -z "$_ELOG_HTTP_METHOD" ]; then
 		_elog_http_detect
 	fi
-	# No transport available — silent no-op
 	[ "$_ELOG_HTTP_METHOD" = "none" ] && return 0
 
 	# Fire-and-forget via background subshell — caller never blocks;
@@ -794,10 +691,6 @@ _elog_http_send() {
 			--post-data="$_payload" -O /dev/null "$_url" ;;
 	esac ) 2>/dev/null &  # suppress errors from background HTTP delivery
 }
-
-# ---------------------------------------------------------------------------
-# GELF Output Module (Graylog Extended Log Format 1.1)
-# ---------------------------------------------------------------------------
 
 # _elog_ts_epoch(iso_ts) — convert ISO 8601 timestamp to Unix epoch seconds
 # Uses GNU date -d for ISO-to-epoch conversion (works on all 9 target OSes)
@@ -819,7 +712,7 @@ _elog_fmt_gelf() {
 	_app="${ELOG_APP:-${0##*/}}"
 	_pid="$$"
 
-	# short_message: first 256 chars; full_message only if truncated
+	# GELF short_message capped at 256; full_message emitted only when truncated
 	local _short_msg="${_msg:0:256}"
 	local _esc_short _esc_host _esc_app _esc_type
 	_elog_json_escape "$_short_msg"
@@ -833,7 +726,6 @@ _elog_fmt_gelf() {
 
 	local _gelf="{\"version\":\"1.1\",\"host\":\"${_esc_host}\",\"short_message\":\"${_esc_short}\""
 
-	# full_message only when message exceeds 256 chars
 	if [ ${#_msg} -gt 256 ]; then
 		local _esc_full
 		_elog_json_escape "$_msg"
@@ -844,7 +736,6 @@ _elog_fmt_gelf() {
 	_gelf="${_gelf},\"timestamp\":${_epoch},\"level\":${_sev}"
 	_gelf="${_gelf},\"_app\":\"${_esc_app}\",\"_pid\":${_pid},\"_event_type\":\"${_esc_type}\""
 
-	# Tag as custom field (only if non-empty)
 	if [ -n "$_tag" ]; then
 		local _esc_tag
 		_elog_json_escape "$_tag"
@@ -872,12 +763,11 @@ _elog_fmt_gelf() {
 _elog_out_gelf() {
 	local _line="$1"
 
-	# Write to capture file if configured (testing/debug)
+	# ELOG_GELF_FILE is a capture path for testing/debug; separate from network delivery
 	if [ -n "${ELOG_GELF_FILE:-}" ]; then
 		_elog_safe_append "$ELOG_GELF_FILE" "$_line"
 	fi
 
-	# Guard: no host configured = no network send
 	[ -z "${ELOG_GELF_HOST:-}" ] && return 0
 
 	local _transport="${ELOG_GELF_TRANSPORT:-udp}"
@@ -885,7 +775,6 @@ _elog_out_gelf() {
 
 	case "$_transport" in
 		udp)
-			# Lazy UDP detection if not yet probed
 			if [ -z "$_ELOG_UDP_METHOD" ]; then
 				_elog_udp_detect
 			fi
@@ -898,32 +787,21 @@ _elog_out_gelf() {
 	esac
 }
 
-# ---------------------------------------------------------------------------
-# ELK JSON Output Module (ECS-Aligned)
-# ---------------------------------------------------------------------------
-
 # _elog_ecs_category(event_type) — map elog event type to ECS event.category
 _elog_ecs_category() {
 	case "${1:-}" in
-		# Detection category
 		threat_detected|threshold_exceeded|pattern_matched|scan_started|scan_completed)
 			_ELOG_RET="intrusion_detection" ;;
-		# Enforcement category
 		block_added|block_removed|block_escalated|quarantine_added|quarantine_removed)
 			_ELOG_RET="intrusion_detection" ;;
-		# Trust category
 		trust_added|trust_removed)
 			_ELOG_RET="configuration" ;;
-		# Network category
 		rule_loaded|rule_removed|service_state)
 			_ELOG_RET="network" ;;
-		# Alert category
 		alert_sent|alert_failed)
 			_ELOG_RET="notification" ;;
-		# Monitor category
 		monitor_started|monitor_stopped)
 			_ELOG_RET="process" ;;
-		# System category
 		config_loaded|config_error|file_cleaned|error_occurred)
 			_ELOG_RET="configuration" ;;
 		*)
@@ -934,17 +812,14 @@ _elog_ecs_category() {
 # _elog_ecs_type(event_type) — map elog event type to ECS event.type
 _elog_ecs_type() {
 	case "${1:-}" in
-		# Enforcement: block/quarantine actions
 		block_added|quarantine_added)
 			_ELOG_RET="denied" ;;
 		block_removed|quarantine_removed)
 			_ELOG_RET="allowed" ;;
 		block_escalated)
 			_ELOG_RET="denied" ;;
-		# Trust: configuration changes
 		trust_added|trust_removed)
 			_ELOG_RET="change" ;;
-		# Network: rule and service lifecycle
 		rule_loaded)
 			_ELOG_RET="connection" ;;
 		rule_removed)
@@ -953,12 +828,10 @@ _elog_ecs_type() {
 			_ELOG_RET="start" ;;
 		monitor_stopped)
 			_ELOG_RET="end" ;;
-		# System: config and errors
 		config_loaded|file_cleaned)
 			_ELOG_RET="change" ;;
 		config_error|error_occurred|alert_failed)
 			_ELOG_RET="error" ;;
-		# Detection and alerts: informational
 		*)
 			_ELOG_RET="info" ;;
 	esac
@@ -977,7 +850,6 @@ _elog_fmt_elk() {
 	_elog_ecs_type "$_type"
 	_ecs_type="$_ELOG_RET"
 
-	# JSON-escape all variable fields
 	local _esc_ts _esc_level _esc_msg _esc_host _esc_app _esc_type
 	local _esc_category _esc_ecs_type
 	_elog_json_escape "$_ts"
@@ -1002,7 +874,6 @@ _elog_fmt_elk() {
 	_elk="${_elk},\"event.type\":\"${_esc_ecs_type}\",\"event.action\":\"${_esc_type}\""
 	_elk="${_elk},\"host.name\":\"${_esc_host}\",\"process.name\":\"${_esc_app}\",\"process.pid\":${_pid}"
 
-	# Tags array from tag (only if non-empty)
 	if [ -n "$_tag" ]; then
 		local _esc_tag
 		_elog_json_escape "$_tag"
@@ -1038,25 +909,19 @@ _elog_fmt_elk() {
 _elog_out_elk_json() {
 	local _line="$1"
 
-	# Write to capture file if configured (testing/debug)
+	# ELOG_ELK_FILE is a capture path for testing/debug; separate from network delivery
 	if [ -n "${ELOG_ELK_FILE:-}" ]; then
 		_elog_safe_append "$ELOG_ELK_FILE" "$_line"
 	fi
 
-	# Guard: no URL configured = no network send
 	[ -z "${ELOG_ELK_URL:-}" ] && return 0
 
 	local _index="${ELOG_ELK_INDEX:-elog-events}"
 	_elog_http_send "${ELOG_ELK_URL}/${_index}/_doc" "$_line" "application/json"
 }
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
-
-# _elog_dispatch api_source formatted_line json_line level msg stdout_flag
-# Routes output to all enabled modules whose source filter matches api_source.
-# api_source: "elog" or "event"
+# _elog_dispatch api_source classic json level msg stdout_flag — route to enabled modules
+# api_source ∈ {elog,event}; modules with source="all" receive both streams
 _elog_dispatch() {
 	local _api="$1" _classic="$2" _json="$3" _level="$4" _msg="$5" _stdout_flag="${6:-}"
 	local _i _name _handler _enabled _format _source _line
@@ -1075,7 +940,6 @@ _elog_dispatch() {
 		_handler="${_ELOG_OUTPUT_HANDLERS[$_i]}"
 		_format="${_ELOG_OUTPUT_FORMATS[$_i]}"
 
-		# Select formatted line based on module's declared format
 		case "$_format" in
 			json)    _line="$_json" ;;
 			cef)     _line="$_ELOG_STAGE_CEF" ;;
@@ -1093,34 +957,22 @@ _elog_dispatch() {
 	done
 }
 
-# ---------------------------------------------------------------------------
-# Event Taxonomy
-# ---------------------------------------------------------------------------
-
-# _elog_event_type_valid(type) — returns 0 for known event types, 1 for unknown
-# 23 canonical event types across 7 categories. Guidance only — elog_event()
-# does not enforce; consumers may pass unknown types.
+# _elog_event_type_valid(type) — 0 for known event types, 1 for unknown
+# Guidance only: elog_event() does not enforce; consumers may pass unknown types.
 _elog_event_type_valid() {
 	case "${1:-}" in
-		# Detection
 		threat_detected|threshold_exceeded|pattern_matched|scan_started|scan_completed)
 			return 0 ;;
-		# Enforcement
 		block_added|block_removed|block_escalated|quarantine_added|quarantine_removed)
 			return 0 ;;
-		# Trust
 		trust_added|trust_removed)
 			return 0 ;;
-		# Network
 		rule_loaded|rule_removed|service_state)
 			return 0 ;;
-		# Alert
 		alert_sent|alert_failed)
 			return 0 ;;
-		# Monitor
 		monitor_started|monitor_stopped)
 			return 0 ;;
-		# System
 		config_loaded|config_error|file_cleaned|error_occurred)
 			return 0 ;;
 		*)
@@ -1128,11 +980,8 @@ _elog_event_type_valid() {
 	esac
 }
 
-# _elog_event_severity(type) — returns default severity name for event type
-# error: block_escalated, alert_failed, config_error, error_occurred
-# warn:  threat_detected, threshold_exceeded, block_added, quarantine_added
-# info:  all others + unknown types
-# No types default to critical — consumer must escalate explicitly.
+# _elog_event_severity(type) — default severity name for event type
+# No types default to "critical" — consumers must escalate explicitly.
 _elog_event_severity() {
 	case "${1:-}" in
 		block_escalated|alert_failed|config_error|error_occurred)
@@ -1144,31 +993,20 @@ _elog_event_severity() {
 	esac
 }
 
-# ---------------------------------------------------------------------------
-# Public API: elog()
-# ---------------------------------------------------------------------------
-
-# elog(level, message [, stdout_flag])
-# Primary logging function — backward compatible with BFD v1.0.0 API.
-#
-# Levels: debug, info, warn, error, critical
-# - debug: stdout only (bare text), gated by ELOG_VERBOSE=1, never writes to files
-# - info+: formatted output routed through output module dispatch
-#
-# Returns 0 always (logging must never cause caller failure).
+# elog(level, message [, stdout_flag]) — primary logging API (BFD v1.0.0 compatible)
+# debug: stdout-only bare text, gated by ELOG_VERBOSE=1 (bypasses ELOG_LEVEL).
+# Always returns 0 — logging must never propagate failure to the caller.
 elog() {
 	local _level="${1:-info}"
 	local _msg="${2:-}"
 	local _stdout_flag="${3:-}"
 
-	# empty message — no output
 	[ -z "$_msg" ] && return 0
 
 	_elog_level_num "$_level"
 	local _level_num="$_ELOG_RET"
 
-	# debug level: stdout only (bare text), gated solely by ELOG_VERBOSE
-	# (not subject to ELOG_LEVEL filtering — ELOG_VERBOSE is its own gate)
+	# debug bypasses ELOG_LEVEL filtering — ELOG_VERBOSE is its own independent gate
 	if [ "$_level_num" -eq 0 ]; then
 		if [ "${ELOG_VERBOSE:-0}" = "1" ]; then
 			echo "$_msg"
@@ -1178,13 +1016,11 @@ elog() {
 
 	local _min_level="${ELOG_LEVEL:-1}"
 
-	# below minimum severity — suppress
 	[ "$_level_num" -lt "$_min_level" ] && return 0
 
-	# Fallback: auto-enable modules if init wasn't called (backward compat)
+	# Backward-compat: auto-enable modules when consumer did not call elog_init
 	_elog_auto_enable
 
-	# info+ levels: format and route
 	local _ts _host _app _pid _iso_ts
 	local _both_ts
 	_both_ts=$(date +"${ELOG_TS_FORMAT:-%b %e %H:%M:%S}|%Y-%m-%dT%H:%M:%S%z")
@@ -1195,12 +1031,11 @@ elog() {
 	_app="${ELOG_APP:-${0##*/}}"
 	_pid="$$"
 
-	# Build classic formatted line — sanitize newlines to prevent log injection
+	# Sanitize newlines in classic line to prevent log injection
 	local _classic_msg="${_msg//$'\n'/\\n}"
 	local _classic_line
 	_classic_line="$_ts $_host ${_app}(${_pid}): $_classic_msg"
 
-	# Build JSON formatted line
 	local _json_line _esc_msg _tag _esc_tag _json_msg
 	_elog_extract_tag "$_msg"
 	_tag="$_ELOG_RET"
@@ -1227,7 +1062,6 @@ elog() {
 		_json_line="{\"ts\":\"${_iso_ts}\",\"host\":\"${_esc_host}\",\"app\":\"${_esc_app}\",\"pid\":${_pid},\"level\":\"${_esc_level}\",\"msg\":\"${_esc_msg}\"}"
 	fi
 
-	# Dispatch via output module registry (8 modules always registered at source time)
 	local _fmt="${ELOG_FORMAT:-classic}"
 	local _out_classic _out_json
 	if [ "$_fmt" = "json" ]; then
@@ -1236,12 +1070,11 @@ elog() {
 		_out_classic="$_classic_line"
 	fi
 	_out_json="$_json_line"
-	# Stage level for SIEM handlers (syslog_udp uses _ELOG_EVT_LEVEL)
+	# Stage level for SIEM handlers (syslog_udp reads _ELOG_EVT_LEVEL)
 	_ELOG_EVT_LEVEL="$_level"
 	_elog_dispatch "elog" "$_out_classic" "$_out_json" "$_level" "$_msg" "$_stdout_flag"
 	_ELOG_EVT_LEVEL=""
 
-	# Periodic log truncation check
 	_ELOG_WRITE_COUNT=$((_ELOG_WRITE_COUNT + 1))
 	if [ $((_ELOG_WRITE_COUNT % _ELOG_TRUNCATE_CHECK_INTERVAL)) -eq 0 ]; then
 		_elog_truncate_check
@@ -1250,53 +1083,35 @@ elog() {
 	return 0
 }
 
-# Convenience wrappers
 elog_debug() { elog debug "$@"; }
 elog_info()  { elog info "$@"; }
 elog_warn()  { elog warn "$@"; }
 elog_error() { elog error "$@"; }
 elog_critical() { elog critical "$@"; }
 
-# ---------------------------------------------------------------------------
-# Public API: elog_event()
-# ---------------------------------------------------------------------------
-
-# elog_event(event_type, severity, message [, key1=val1 ...])
-# Structured event logging — dispatches via api_source="event" to audit_file
-# and any custom modules registered with source="event" or source="all".
-#
-# - Empty type: stderr warning + return 1
-# - Empty message: return 0 (no output)
-# - Severity filtering: _elog_level_num < ELOG_LEVEL → suppress, return 0
-# - Builds JSON envelope with mandatory fields: ts, host, app, pid, type, level, msg
-# - Extracts {tag} from message; parses remaining args as key=value extra fields
-# - Extra values must not contain spaces (space-delimited internal format)
-# - Increments _ELOG_AUDIT_WRITE_COUNT; truncates audit log when ELOG_AUDIT_MAX_LINES > 0
-# - Returns 0 on success
+# elog_event(event_type, severity, message [, key=val ...]) — structured event API
+# Dispatches via api_source="event" to audit_file and modules registered with
+# source="event"|"all". Extra values must NOT contain spaces (space-delimited
+# internal format). Empty type returns 1; everything else returns 0.
 elog_event() {
 	local _type="${1:-}"
 	local _level="${2:-info}"
 	local _msg="${3:-}"
 
-	# Empty type — input validation error
 	if [ -z "$_type" ]; then
 		echo "elog_lib: elog_event() requires event_type as first argument" >&2
 		return 1
 	fi
 
-	# Empty message — no output
 	[ -z "$_msg" ] && return 0
 
-	# Severity filtering
 	_elog_level_num "$_level"
 	local _level_num="$_ELOG_RET"
 	local _min_level="${ELOG_LEVEL:-1}"
 	[ "$_level_num" -lt "$_min_level" ] && return 0
 
-	# Pre-init fallback
 	_elog_auto_enable
 
-	# Timestamp and identity
 	local _ts _host _app _pid _iso_ts
 	local _both_ts
 	_both_ts=$(date +"${ELOG_TS_FORMAT:-%b %e %H:%M:%S}|%Y-%m-%dT%H:%M:%S%z")
@@ -1307,7 +1122,6 @@ elog_event() {
 	_app="${ELOG_APP:-${0##*/}}"
 	_pid="$$"
 
-	# Extract {tag} from message
 	local _tag _json_msg
 	_elog_extract_tag "$_msg"
 	_tag="$_ELOG_RET"
@@ -1318,7 +1132,6 @@ elog_event() {
 		_json_msg="$_msg"
 	fi
 
-	# JSON-escape mandatory fields
 	local _esc_msg _esc_type
 	_elog_json_escape "$_json_msg"
 	_esc_msg="$_ELOG_RET"
@@ -1332,8 +1145,7 @@ elog_event() {
 	_elog_json_escape "$_level"
 	_esc_level="$_ELOG_RET"
 
-	# Parse key=value extra fields from remaining args
-	# Build both JSON extras and raw extras (for SIEM handlers) in single pass
+	# Build JSON extras and raw SIEM extras in a single pass to avoid re-parsing
 	local _pair _key _val _esc_key _esc_val _extra="" _raw_extras=""
 	shift 3 2>/dev/null || true  # safe: fewer than 3 args means no extras
 	for _pair in "$@"; do
@@ -1346,7 +1158,7 @@ elog_event() {
 		_elog_json_escape "$_val"
 		_esc_val="$_ELOG_RET"
 		_extra="${_extra},\"${_esc_key}\":\"${_esc_val}\""
-		# Raw extras for SIEM handlers (space-separated key=value)
+		# SIEM handlers consume raw (unescaped) extras in space-separated key=value form
 		if [ -n "$_raw_extras" ]; then
 			_raw_extras="${_raw_extras} ${_key}=${_val}"
 		else
@@ -1354,7 +1166,6 @@ elog_event() {
 		fi
 	done
 
-	# Build JSON envelope
 	local _json_line
 	_json_line="{\"ts\":\"${_iso_ts}\",\"host\":\"${_esc_host}\",\"app\":\"${_esc_app}\",\"pid\":${_pid},\"type\":\"${_esc_type}\",\"level\":\"${_esc_level}\",\"msg\":\"${_esc_msg}\""
 	if [ -n "$_tag" ]; then
@@ -1365,7 +1176,7 @@ elog_event() {
 	fi
 	_json_line="${_json_line}${_extra}}"
 
-	# Build classic line — sanitize newlines to prevent log injection
+	# Sanitize newlines in classic line to prevent log injection
 	local _classic_msg="${_json_msg//$'\n'/\\n}"
 	local _classic_line
 	if [ -n "$_tag" ]; then
@@ -1400,13 +1211,11 @@ elog_event() {
 	# Dispatch via event api_source — reaches audit_file and source="all" modules
 	_elog_dispatch "event" "$_classic_line" "$_json_line" "$_level" "$_msg" ""
 
-	# Periodic audit log truncation check
 	_ELOG_AUDIT_WRITE_COUNT=$((_ELOG_AUDIT_WRITE_COUNT + 1))
 	if [ $((_ELOG_AUDIT_WRITE_COUNT % _ELOG_TRUNCATE_CHECK_INTERVAL)) -eq 0 ]; then
 		_elog_truncate_check_file "${ELOG_AUDIT_FILE:-}" "${ELOG_AUDIT_MAX_LINES:-0}"
 	fi
 
-	# Clear staging globals
 	_ELOG_EVT_TS=""
 	_ELOG_EVT_TYPE=""
 	_ELOG_EVT_LEVEL=""
@@ -1421,15 +1230,7 @@ elog_event() {
 	return 0
 }
 
-# ---------------------------------------------------------------------------
-# Built-in Module Registration
-# ---------------------------------------------------------------------------
-
-# Register built-in output modules — consumers enable via elog_output_enable or elog_init()
-# file: app log, format follows ELOG_FORMAT, receives elog() output
-# audit_file: audit log, always JSONL, receives elog_event() output only
-# syslog_file: syslog echo, format follows ELOG_FORMAT, receives elog() output (source=elog)
-# stdout: terminal, classic format with prefix modes, receives all output
+# Built-in output modules — consumers enable via elog_output_enable or elog_init
 elog_output_register "file" "_elog_out_file" "classic" "elog"
 elog_output_register "audit_file" "_elog_out_audit" "json" "event"
 elog_output_register "syslog_file" "_elog_out_syslog_file" "classic" "elog"
