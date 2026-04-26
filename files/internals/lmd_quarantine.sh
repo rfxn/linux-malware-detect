@@ -1,0 +1,843 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Quarantine, clean, restore operations and batch hit processing pipeline
+
+# Source guard
+[[ -n "${_LMD_QUARANTINE_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_QUARANTINE_LOADED=1
+
+_clean_rescan() {
+	# Rescan a single file after clean attempt to verify signature is removed.
+	# Stages: 1 hash, 2 hex+csig, 3 yara, 4 strlen — early return on first hit.
+	local _fpath="$1"
+	clean_state="1"
+	unset clean_failed
+
+	# Ensure runtime sigs are populated
+	if [ -z "$runtime_hexstrings" ] || [ -z "$runtime_md5" ] || { [ "$scan_csig" == "1" ] && [ -z "$_gensigs_csig_done" ]; }; then
+		gensigs
+	fi
+
+	# Stage 1: Hash check (MD5, SHA-256)
+	if [ "$_effective_hashtype" == "md5" ] || [ "$_effective_hashtype" == "both" ]; then
+		local _md5out _hash
+		_md5out="$($md5sum "$_fpath")"
+		_hash="${_md5out%% *}"
+		if [ -n "$_hash" ]; then
+			local _val
+			_val=$(grep -m1 "$_hash" "$runtime_md5" 2>/dev/null)
+			if [ -n "$_val" ]; then
+				clean_failed=1
+			fi
+		fi
+	fi
+	if [ "$clean_failed" != "1" ] && { [ "$_effective_hashtype" == "sha256" ] || [ "$_effective_hashtype" == "both" ]; } \
+	   && [ -n "$runtime_sha256" ] && [ -s "$runtime_sha256" ]; then
+		local _sha256out _sha256hash
+		_sha256out="$($sha256sum "$_fpath")"
+		_sha256hash="${_sha256out%% *}"
+		if [ -n "$_sha256hash" ]; then
+			local _val
+			_val=$(grep -m1 "$_sha256hash" "$runtime_sha256" 2>/dev/null)
+			if [ -n "$_val" ]; then
+				clean_failed=1
+			fi
+		fi
+	fi
+	if [ "$clean_failed" == "1" ]; then
+		unset clean_state
+		return
+	fi
+
+	# Stage 2: HEX + CSIG (batch worker on 1-file chunk)
+	if [ -f "$_fpath" ] && [ -r "$_fpath" ]; then
+		local _chunk _hits
+		_chunk=$(mktemp "$tmpdir/.clean_chunk.$$.XXXXXX")
+		printf '%s\n' "$_fpath" > "$_chunk"
+		_hits=$(_hex_csig_batch_worker "$_chunk" "${scan_hexdepth:-262144}" \
+			"$runtime_hex_literal" "$runtime_hex_regex" "$runtime_hex_sigmap" \
+			"${runtime_csig_batch_compiled:-}" "${runtime_csig_literals:-}" \
+			"${runtime_csig_wildcards:-}" "${runtime_csig_universals:-}" \
+			"" "")
+		command rm -f "$_chunk"
+		if [ -n "$_hits" ]; then
+			clean_failed=1
+			unset clean_state
+			return
+		fi
+	fi
+
+	# Stage 3: YARA
+	if [ -f "$_fpath" ] && [ "$scan_yara" == "1" ]; then
+		local clean_yara_list
+		clean_yara_list=$(mktemp "$tmpdir/.yara_clean.XXXXXX")
+		echo "$_fpath" > "$clean_yara_list"
+		scan_stage_yara "$clean_yara_list" 1 >> /dev/null 2>&1
+		command rm -f "$clean_yara_list"
+		if [ "$clean_failed" == "1" ]; then
+			unset clean_state
+			return
+		fi
+	fi
+
+	# Stage 4: strlen
+	if [ -f "$_fpath" ] && [ "$string_length_scan" == "1" ]; then
+		scan_strlen file "$_fpath" >> /dev/null 2>&1
+	fi
+
+	unset clean_state
+}
+
+clean() {
+	file="$1"
+	file_signame="$2"
+	file_owner="$3"
+	file_chmod="$4"
+	file_size="$5"
+	file_md5="$6"
+
+	sh_hitname=$(echo "$file_signame" | sed -E -e 's/\{(HEX|MD5|SHA256|CAV|YARA|CSIG)\}//' -e 's/\.[0-9]+$//')
+	if [ -d "$cldir" ] && [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ] && [ -f "$file" ]; then
+		if { [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ]; } && [ -f "${file}.info" ]; then
+			file_path=$(grep -E -v '\#' "${file}.info" | cut -d':' -f9-)
+			eout "{clean} restoring $file for cleaning attempt" 1
+			restore "$file" >> /dev/null 2>&1
+			if [ -f "$cldir/$sh_hitname" ]; then
+				eout "{clean} attempting to clean $file_path with $sh_hitname rule" 1
+				"$cldir/$sh_hitname" "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
+			fi
+			if [ -f "$cldir/custom.$sh_hitname" ]; then
+				eout "{clean} attempting to clean $file_path with custom.$sh_hitname rule" 1
+				"$cldir/custom.$sh_hitname" "$file_path" "$file_signame" "$file_owner" "$file_chmod" "$file_size" "$file_md5"
+			fi
+			eout "{clean} rescanning $file_path for malware hits" 1
+			_clean_rescan "$file_path"
+			if [ "$clean_failed" == "1" ]; then
+				chattr -ia "$file_path" 2>/dev/null
+				command mv -f "$file_path" "$file"
+				chmod 000 "$file"
+				chown root:root "$file"
+				eout "{clean} clean failed on $file_path and returned to quarantine" 1
+			else
+				echo "$file_path" >> "$sessdir/clean.$$"
+				progress_cleaned=$((${progress_cleaned:-0} + 1))
+				echo "$file_path" >> "$clean_history"
+				eout "{clean} clean successful on $file_path" 1
+				_lmd_elog_event "$ELOG_EVT_FILE_CLEANED" "info" "cleaned $file_path" "file=$file_path" "sig=$sh_hitname"
+			fi
+		elif { [ -f "$cldir/$sh_hitname" ] || [ -f "$cldir/custom.$sh_hitname" ]; } && [ -f "$file" ]; then
+			file_path="$file"
+			if [ -f "$cldir/$sh_hitname" ]; then
+				eout "{clean} attempting to clean $file with $sh_hitname rule" 1
+				"$cldir/$sh_hitname" "$file_path"
+			fi
+			if [ -f "$cldir/custom.$sh_hitname" ]; then
+				eout "{clean} attempting to clean $file with custom.$sh_hitname rule" 1
+				"$cldir/custom.$sh_hitname" "$file_path"
+			fi
+			eout "{clean} scanning $file for malware hits"
+			_clean_rescan "$file_path"
+			if [ "$clean_failed" == "1" ]; then
+				eout "{clean} clean failed on $file" 1
+			else
+				echo "$file" >> "$sessdir/clean.$$"
+				progress_cleaned=$((${progress_cleaned:-0} + 1))
+				echo "$file_path" >> "$clean_history"
+				eout "{clean} clean successful on $file" 1
+				_lmd_elog_event "$ELOG_EVT_FILE_CLEANED" "info" "cleaned $file" "file=$file" "sig=$sh_hitname"
+			fi
+		else
+			eout "{clean} could not find clean rule for hit $sh_hitname or file $file no longer exists." 1
+		fi
+	else
+		if [ "$quarantine_clean" == "1" ] && [ "$quarantine_hits" == "1" ]; then
+			eout "file path error on $file, aborting."
+			exit 1
+		else
+			eout "quarantine_clean and quarantine_hits are disabled; skipped file $file"
+		fi
+	fi
+}
+
+quar_get_filestat() {
+	local fstat="$1"
+	if [ -f "$fstat" ]; then
+		local _line
+		# owner:group:mode:size(b):hash:atime(epoch):mtime(epoch):ctime(epoch):file(path)
+		_line=$(grep -E -v '\#' "$fstat")
+		# file_path is last field and may contain colons; read -r captures remainder
+		IFS=':' read -r file_owner file_group file_mode file_size md5_hash \
+			file_atime file_mtime file_ctime file_path <<< "$_line"
+	fi
+}
+
+_validate_restore_path() {
+	local rpath="$1"
+	local pat='(^|/)\.\.(/|$)'
+	if [ -z "$rpath" ]; then
+		eout "{restore} ERROR: empty restore path in .info file" 1
+		return 1
+	fi
+	if [[ "$rpath" =~ $pat ]]; then
+		eout "{restore} ERROR: path traversal detected in restore path: $rpath" 1
+		return 1
+	fi
+	local rdir
+	rdir=$(dirname "$rpath")
+	if [ ! -d "$rdir" ]; then
+		eout "{restore} ERROR: restore directory does not exist: $rdir" 1
+		return 1
+	fi
+	if [ "$pub" == "1" ] && [ -n "$user" ]; then
+		local user_home
+		user_home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
+		if [ -n "$user_home" ]; then
+			case "$rpath" in
+				"${user_home}/"*) ;;
+				*)
+					eout "{restore} ERROR: non-root restore path outside user home: $rpath" 1
+					return 1
+					;;
+			esac
+		fi
+	fi
+	return 0
+}
+
+restore() {
+	local file="$1"
+	if [ -f "$quardir/$file" ] && [ -f "$quardir/${file}.info" ]; then
+		quar_get_filestat "$quardir/${file}.info"
+		if ! _validate_restore_path "$file_path"; then
+			return 1
+		fi
+		chown "${file_owner}:${file_group}" "$quardir/$file" >> /dev/null 2>&1 # redirect: chown may fail on invalid owner/group from corrupt .info
+		chmod "$file_mode" "$quardir/$file" >> /dev/null 2>&1 # redirect: chmod may fail on invalid mode from corrupt .info
+		command mv -f "$quardir/$file" "$file_path"
+		if [ "$os_freebsd" == "1" ]; then
+			touch -m -t "$(date -r "$file_mtime" +%Y%m%d%H%M.%S)" "$file_path"
+		else
+			touch -m --date="@${file_mtime}" "$file_path"
+		fi
+		eout "{restore} quarantined file '$file' restored to '$file_path'" 1
+		_lmd_elog_event "$ELOG_EVT_QUARANTINE_REMOVED" "info" "restored $file to $file_path" "file=$file_path"
+		command rm -f "$quardir/${file}.info"
+	elif [ -f "$file" ] && [ -f "${file}.info" ]; then
+		quar_get_filestat "${file}.info"
+		if ! _validate_restore_path "$file_path"; then
+			return 1
+		fi
+		chown "${file_owner}:${file_group}" "$file" >> /dev/null 2>&1 # redirect: chown may fail on invalid owner/group from corrupt .info
+		chmod "$file_mode" "$file" >> /dev/null 2>&1 # redirect: chmod may fail on invalid mode from corrupt .info
+		command mv -f "$file" "$file_path"
+		if [ "$os_freebsd" == "1" ]; then
+			touch -m -t "$(date -r "$file_mtime" +%Y%m%d%H%M.%S)" "$file_path"
+		else
+			touch -m --date="@${file_mtime}" "$file_path"
+		fi
+		eout "{restore} quarantined file '$file' restored to '$file_path'" 1
+		_lmd_elog_event "$ELOG_EVT_QUARANTINE_REMOVED" "info" "restored $file to $file_path" "file=$file_path"
+		command rm -f "${file}.info"
+	else
+		eout "{restore} '$file' is not eligible for restore or could not be found" 1
+		return 1
+	fi
+}
+
+restore_hitlist() {
+	local hitlist
+	hitlist=$(_session_resolve "$1")
+	[ -z "$hitlist" ] && hitlist="$sessdir/session.hits.$1"
+	local is_autoquar quar_file
+	local _restore_fail=0
+	if [ -f "$hitlist" ]; then
+		if _session_is_tsv "$hitlist"; then
+			# TSV format: field 2=filepath, field 3=quarpath ("-" if not quarantined)
+			local _has_quar
+			_has_quar=$(awk -F'\t' '!/^#/ && $3 != "-" && $3 != "" {print "1"; exit}' "$hitlist")
+			if [ "$_has_quar" = "1" ]; then
+				while IFS=$'\t' read -r _sig _fp _qp _rest; do
+					[ -z "$_sig" ] && continue
+					[[ "$_sig" == "#"* ]] && continue
+					[ "$_qp" = "-" ] && continue
+					if [ -f "$_qp" ]; then
+						restore "$_qp" || _restore_fail=1
+					fi
+				done < "$hitlist"
+			else
+				while IFS=$'\t' read -r _sig _fp _qp _rest; do
+					[ -z "$_sig" ] && continue
+					[[ "$_sig" == "#"* ]] && continue
+					quar_file=$(grep -F "$_fp" "$quar_history" | awk -F':' '{print $NF}' | tail -n1)
+					restore "$quar_file" || _restore_fail=1
+				done < "$hitlist"
+			fi
+		else
+			lbreakifs set
+			is_autoquar=$(tail -n1 "$hitlist" | awk -F'>' '{print$2}' | grep -E -v '^$' | sed 's/.//')
+			if [ "$is_autoquar" ]; then
+				while IFS= read -r file; do
+					if [ -f "$file" ]; then
+						restore "$file" || _restore_fail=1
+					fi
+				done < <(cut -d':' -f2- "$hitlist" | cut -d'>' -f2 | sed 's/.//')
+			else
+				while IFS= read -r file; do
+					quar_file=$(grep -F "$file" "$quar_history" | awk -F':' '{print $NF}' | tail -n1)
+					restore "$quar_file" || _restore_fail=1
+				done < <(cut -d':' -f2- "$hitlist" | sed 's/.//')
+			fi
+			lbreakifs unset
+		fi
+		return "$_restore_fail"
+	else
+		eout "{restore} could not find a valid hit list to restore." 1
+		return 1
+	fi
+}
+
+clean_hitlist() {
+	local scanid hitlist is_quared
+	if [ "$quarantine_clean" == "0" ] || [ "$quarantine_hits" == "0" ]; then
+		eout "{clean} quarantine_clean and/or quarantine_hits are disabled, nothing to do here." 1
+		exit 0
+	fi
+
+	scanid="$1"
+	hitlist=$(_session_resolve "$scanid")
+	[ -z "$hitlist" ] && hitlist="$sessdir/session.hits.$scanid"
+	if [ -f "$hitlist" ]; then
+		if _session_is_tsv "$hitlist"; then
+			# TSV format: field 1=sig, field 2=filepath, field 3=quarpath
+			local _has_quar
+			_has_quar=$(awk -F'\t' '!/^#/ && $3 != "-" && $3 != "" {print "1"; exit}' "$hitlist")
+			if [ "$_has_quar" != "1" ]; then
+				while IFS=$'\t' read -r _sig _fp _qp _rest; do
+					[ -z "$_sig" ] && continue
+					[[ "$_sig" == "#"* ]] && continue
+					get_filestat "$_fp" 1
+					hitname="$_sig"
+					clean "$_fp" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+				done < "$hitlist"
+			else
+				while IFS=$'\t' read -r _sig _fp _qp _rest; do
+					[ -z "$_sig" ] && continue
+					[[ "$_sig" == "#"* ]] && continue
+					[ "$_qp" = "-" ] && continue
+					quar_get_filestat "${_qp}.info" 1
+					hitname="$_sig"
+					clean "$_qp" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+				done < "$hitlist"
+			fi
+		else
+			is_quared=$(grep -E '=>' "$hitlist")
+			if [ ! "$is_quared" ]; then
+				lbreakifs set
+				while IFS= read -r file; do
+					get_filestat "$file" 1
+					hitname=$(grep -F "$file" "$hitlist" | awk '{print$1}')
+					clean "$file" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+				done < <(cut -d':' -f2- "$hitlist" | sed 's/.//')
+				lbreakifs unset
+			else
+				lbreakifs set
+				while IFS= read -r file; do
+					quar_get_filestat "${file}.info" 1
+					hitname=$(grep -F "$file" "$hitlist" | awk '{print$1}')
+					clean "$file" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash"
+				done < <(cut -d'>' -f2 "$hitlist" | sed 's/.//')
+				lbreakifs unset
+			fi
+		fi
+	else
+		eout "{clean} invalid scanid $scanid or unknown error, aborting." 1
+		exit 1
+	fi
+}
+
+quarantine_suspend_user() {
+	file="$1"
+	get_filestat "$file"
+	user="$file_owner"
+	user_id=$(id -u "$user")
+	if [ "$user" != "" ] && [ "$user_id" -ge "$quarantine_suspend_user_minuid" ]; then
+		if [ -f "/scripts/suspendacct" ]; then
+			if [ ! -f "/var/cpanel/suspended/$user" ]; then
+				/scripts/suspendacct "$user" "maldet --report $datestamp.$$" >> /dev/null 2>&1
+				eout "{quar} account $user cpanel suspended" 1
+				echo "$user" >> "$sessdir/suspend.users.$$"
+				echo "$user" >> "$suspend_history"
+			fi
+		elif [ -n "$usermod" ]; then
+			if [ "$(grep "$user" /etc/passwd | cut -d':' -f7 | grep /bin/false)" == "" ]; then
+				$usermod -s /bin/false "$user" >> /dev/null 2>&1
+				eout "{quar} account $user suspended; set 'usermod -s /bin/false'"
+				echo "$user" >> "$sessdir/suspend.users.$$"
+				echo "$user" >> "$suspend_history"
+			fi
+		fi
+	fi
+}
+
+## Batch Hit Processing Pipeline
+## All scan engines (native MD5/HEX, ClamAV, YARA, strlen) write hits to a
+## tab-delimited manifest and call _flush_hit_batch() for unified processing.
+## This replaces per-hit record_hit()+quarantine() loops that forked 12-15
+## subprocesses per hit.
+
+_batch_filter_ignore_sigs() {
+	# Bulk-filter a tab-delimited manifest against ignore_sigs patterns.
+	# Modifies the manifest in-place (via temp file + mv).
+	local _manifest="$1"
+	if [ ! -s "$_manifest" ] || [ ! -s "$ignore_sigs" ]; then
+		return
+	fi
+	local _filtered
+	_filtered=$(mktemp "$tmpdir/.batch_igfilter.XXXXXX")
+	awk -F'\t' '
+	FILENAME == ARGV[1] {
+		pats[NR] = $0; np = NR; next
+	}
+	{
+		keep = 1
+		for (i = 1; i <= np; i++) {
+			if ($2 ~ pats[i]) { keep = 0; break }
+		}
+		if (keep) print
+	}
+	' "$ignore_sigs" "$_manifest" > "$_filtered"
+	command mv "$_filtered" "$_manifest"
+}
+
+_batch_stat_gather() {
+	# Bulk-gather stat + md5sum for a manifest of hit files.
+	# Output format: filepath\tsigname\thash\towner\tgroup\tmode\tsize\tatime:mtime:ctime
+	local _manifest="$1" _enriched="$2"
+	local _paths _stat_out _md5_needed _md5_out _h
+
+	# Extract filepaths and filter to those that still exist
+	_paths=$(mktemp "$tmpdir/.batch_paths.XXXXXX")
+	_stat_out=$(mktemp "$tmpdir/.batch_stat.XXXXXX")
+	awk -F'\t' '{print $1}' "$_manifest" | while IFS= read -r _p; do
+		[ -f "$_p" ] && printf '%s\n' "$_p"
+	done > "$_paths"
+
+	if [ ! -s "$_paths" ]; then
+		command rm -f "$_paths" "$_stat_out"
+		: > "$_enriched"
+		return
+	fi
+
+	# Bulk stat — one fork for all files
+	if [ "$os_freebsd" == "1" ]; then
+		# stat on vanished files is non-fatal
+		tr '\n' '\0' < "$_paths" | xargs -0 "$stat" -f '%N\t%Su\t%Sg\t%p\t%z\t%a:%m:%c' 2>/dev/null \
+			| while IFS=$'\t' read -r _n _su _sg _p _z _t; do
+				# FreeBSD %p includes file type prefix char; strip it
+				printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_n" "$_su" "$_sg" "${_p#?}" "$_z" "$_t"
+			done > "$_stat_out"
+	else
+		# stat on vanished files is non-fatal; --printf interprets \t as tab
+		xargs -d '\n' "$stat" --printf '%n\t%U\t%G\t%a\t%s\t%X:%Y:%Z\n' < "$_paths" 2>/dev/null > "$_stat_out"
+	fi
+
+	# Identify files that need md5 hashing (those without hash in column 3)
+	_md5_needed=$(mktemp "$tmpdir/.batch_md5need.XXXXXX")
+	_md5_out=$(mktemp "$tmpdir/.batch_md5out.XXXXXX")
+	awk -F'\t' '($3 == "" || NF < 3) {print $1}' "$_manifest" > "$_md5_needed"
+
+	if [ -s "$_md5_needed" ]; then
+		if [ "$os_freebsd" == "1" ]; then
+			while IFS= read -r _fp; do
+				[ -f "$_fp" ] && [ -r "$_fp" ] || continue
+				_h=$($md5sum "$_fp")
+				printf '%s\t%s\n' "$_fp" "$_h"
+			done < "$_md5_needed" > "$_md5_out"
+		else
+			# md5sum on unreadable files is non-fatal
+			xargs -d '\n' "$md5sum" < "$_md5_needed" 2>/dev/null \
+				| awk '{h=$1; fpath=substr($0, length(h)+3); print fpath "\t" h}' > "$_md5_out"
+		fi
+	fi
+
+	# Single-pass awk join: manifest + stat + md5 → enriched
+	awk -F'\t' '
+	FILENAME == ARGV[1] {
+		# stat output: filepath owner group mode size times
+		stat_owner[$1] = $2; stat_group[$1] = $3
+		stat_mode[$1] = $4; stat_size[$1] = $5; stat_times[$1] = $6
+		next
+	}
+	FILENAME == ARGV[2] {
+		# md5 output: filepath hash
+		md5hash[$1] = $2
+		next
+	}
+	{
+		# manifest: filepath signame [hash]
+		fp = $1; sig = $2; hash = $3
+		if (!(fp in stat_owner)) next
+		if (hash == "") hash = md5hash[fp]
+		if (hash == "") hash = "unknown"
+		printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+			fp, sig, hash, stat_owner[fp], stat_group[fp], \
+			stat_mode[fp], stat_size[fp], stat_times[fp]
+	}
+	' "$_stat_out" "$_md5_out" "$_manifest" > "$_enriched"
+
+	command rm -f "$_paths" "$_stat_out" "$_md5_needed" "$_md5_out"
+}
+
+_batch_record_hits() {
+	# Bulk-generate hits_history and scan_session entries from enriched manifest.
+	# Enriched format: filepath\tsigname\thash\towner\tgroup\tmode\tsize\tatime:mtime:ctime
+	local _enriched="$1" _stage="$2"
+	local _hit_count _hist_block _sess_block
+
+	_hit_count=$($wc -l < "$_enriched")
+	if [ "$_hit_count" -eq 0 ]; then
+		return
+	fi
+
+	# Generate hits_history block and scan_session block in two portable awk passes
+	# Avoids /dev/fd which may not exist on FreeBSD
+	_hist_block=$(mktemp "$tmpdir/.batch_hist.XXXXXX")
+	_sess_block=$(mktemp "$tmpdir/.batch_sess.XXXXXX")
+	awk -F'\t' -v ut="$utime" -v hid="$hostid" '{
+		# enriched: filepath signame hash owner group mode size times
+		fp=$1; sig=$2; hash=$3; own=$4; grp=$5; mode=$6; sz=$7; times=$8
+		printf "%s:%s:%s:%s:%s:%s.%s:%s:%s:%s\n", \
+			ut, hid, sig, hash, sz, own, grp, mode, times, fp
+	}' "$_enriched" > "$_hist_block"
+	awk -F'\t' '
+	BEGIN {
+		# Hit type registry: extract label from {TYPE} prefix
+		ht_label["MD5"]    = "MD5 Hash"
+		ht_label["HEX"]    = "HEX Pattern"
+		ht_label["YARA"]   = "YARA Rule"
+		ht_label["SA"]     = "String Analysis"
+		ht_label["CAV"]    = "ClamAV"
+		ht_label["CSIG"]   = "Compound Sig"
+		ht_label["SHA256"] = "SHA-256 Hash"
+	}
+	{
+		# enriched: filepath(1) signame(2) hash(3) owner(4) group(5) mode(6) size(7) times(8)
+		fp=$1; sig=$2; hash=$3; own=$4; grp=$5; mode=$6; sz=$7; times=$8
+		# Extract mtime from atime:mtime:ctime
+		split(times, ts, ":")
+		mtime = ts[2]
+		# Extract hit_type from {TYPE} prefix in sig
+		hit_type = ""
+		if (match(sig, /^\{[A-Z][A-Z0-9]*\}/)) {
+			hit_type = substr(sig, 2, RLENGTH - 2)
+		}
+		label = (hit_type in ht_label) ? ht_label[hit_type] : hit_type
+		# TSV: sig filepath quarpath hit_type hit_type_label hash size owner group mode mtime
+		printf "%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+			sig, fp, hit_type, label, hash, sz, own, grp, mode, mtime
+	}' "$_enriched" > "$_sess_block"
+
+	# Append in bulk writes
+	cat "$_hist_block" >> "$hits_history"
+	if [ -n "$scan_session" ]; then
+		cat "$_sess_block" >> "$scan_session"
+	fi
+
+	# Summary eout — one line instead of N
+	eout "{hit} $_hit_count malware hits recorded [$_stage]" 1
+
+	# Per-hit elog for low volume (preserves audit trail and test contracts);
+	# summary event for high volume (performance win)
+	if [ "$_hit_count" -le 50 ]; then
+		while IFS=$'\t' read -r _fp _sig _hash _own _grp _mode _sz _times; do
+			_lmd_elog_event "$ELOG_EVT_THREAT_DETECTED" "warn" "malware hit $_sig found for $_fp" "file=$_fp" "sig=$_sig"
+		done < "$_enriched"
+	else
+		_lmd_elog_event "$ELOG_EVT_THREAT_DETECTED" "warn" "$_hit_count malware hits recorded [$_stage]" "count=$_hit_count" "stage=$_stage"
+	fi
+
+	command rm -f "$_hist_block" "$_sess_block"
+}
+
+_batch_quarantine() {
+	# Bulk quarantine files from enriched manifest.
+	# Enriched format: filepath\tsigname\thash\towner\tgroup\tmode\tsize\tatime:mtime:ctime
+	local _enriched="$1" _stage="$2"
+	local _quar_count=0
+	local _quar_hist_block _quar_sess_block _inode_map _quar_dest_paths
+	local _fname _inode _dest _qsig _qfp _enriched_with_inode
+
+	if [ ! -s "$_enriched" ]; then
+		return
+	fi
+
+	_quar_hist_block=$(mktemp "$tmpdir/.batch_qhist.XXXXXX")
+	_quar_sess_block=$(mktemp "$tmpdir/.batch_qsess.XXXXXX")
+
+	# Bulk chattr -ia on all source files (one fork)
+	awk -F'\t' '{print $1}' "$_enriched" | xargs -d '\n' chattr -ia 2>/dev/null || true  # chattr may not exist or files may already lack attrs
+
+	# Batch stat for inode numbers (used for quarantine naming)
+	_inode_map=$(mktemp "$tmpdir/.batch_inodes.XXXXXX")
+	if [ "$os_freebsd" == "1" ]; then
+		awk -F'\t' '{print $1}' "$_enriched" \
+			| tr '\n' '\0' | xargs -0 "$stat" -f '%N\t%i' 2>/dev/null > "$_inode_map"
+	else
+		# stat on vanished files is non-fatal; --printf interprets \t as tab
+		awk -F'\t' '{print $1}' "$_enriched" \
+			| xargs -d '\n' "$stat" --printf '%n\t%i\n' 2>/dev/null > "$_inode_map"
+	fi
+
+	# Merge inode into enriched manifest as column 9 (single awk pass)
+	_enriched_with_inode=$(mktemp "$tmpdir/.batch_einode.XXXXXX")
+	awk -F'\t' 'NR==FNR {inode[$1]=$2; next} {print $0 "\t" inode[$1]}' \
+		"$_inode_map" "$_enriched" > "$_enriched_with_inode"
+	command mv "$_enriched_with_inode" "$_enriched"
+
+	# Per-file loop: mv (unique src→dest) and .info creation
+	while IFS=$'\t' read -r _fp _sig _hash _own _grp _mode _sz _times _inode; do
+		_fname="${_fp##*/}"
+		[ -z "$_inode" ] && _inode="$$"
+		_dest="$quardir/$_fname.$_inode"
+
+		# Suspend user before quarantine if enabled
+		if [ "$quarantine_suspend_user" == "1" ]; then
+			file_owner="$_own"
+			quarantine_suspend_user "$_fp"
+		fi
+
+		if ! command mv "$_fp" "$_dest" 2>/dev/null; then  # file may have vanished between stat and mv
+			continue
+		fi
+
+		# Write .info metadata
+		printf '%s\n%s\n' "# owner:group:mode:size(b):hash:atime(epoch):mtime(epoch):ctime(epoch):file(path)" "$_own:$_grp:$_mode:$_sz:$_hash:$_times:$_fp" > "$_dest.info"
+
+		# Collect quarantine history and session entries
+		printf '%s:%s:%s:%s:%s:%s:%s:%s\n' "$utime" "$_sig" "$_fp" "$_own" "$_grp" "$_hash" "$_sz" "$_dest" >> "$_quar_hist_block"
+		printf '%s\t%s\t%s\n' "$_sig" "$_fp" "$_dest" >> "$_quar_sess_block"
+		_quar_count=$((_quar_count + 1))
+	done < "$_enriched"
+
+	# Bulk permission/ownership changes on quarantine destinations
+	# Errors non-fatal (file may have been removed between mv and chmod)
+	if [ "$_quar_count" -gt 0 ]; then
+		# Extract quarantine dest paths once, reuse for all bulk ops
+		_quar_dest_paths=$(mktemp "$tmpdir/.batch_qdest.XXXXXX")
+		awk -F'\t' '{print $3}' "$_quar_sess_block" | tr '\n' '\0' > "$_quar_dest_paths"
+		if [ "$pub" == "1" ]; then
+			xargs -0 chmod 400 < "$_quar_dest_paths" 2>/dev/null  # safe perms for public scan user
+		else
+			xargs -0 chmod 000 < "$_quar_dest_paths" 2>/dev/null  # final lockdown
+			xargs -0 chown root:root < "$_quar_dest_paths" 2>/dev/null
+		fi
+		xargs -0 touch --no-create < "$_quar_dest_paths" 2>/dev/null  # suppress errors if flag unsupported
+		command rm -f "$_quar_dest_paths"
+	fi
+
+	# Update quarantine history and scan_session (overwrite non-quarantine entries)
+	cat "$_quar_hist_block" >> "$quar_history"
+
+	# Update scan_session: set field 3 (quarpath) for quarantined files.
+	# Build lookup from _quar_sess_block (only successfully quarantined files),
+	# NOT from _enriched (which includes failed mv attempts).
+	if [ -n "$scan_session" ] && [ -s "$scan_session" ] && [ "$_quar_count" -gt 0 ]; then
+		local _quar_lookup _updated_sess
+		_quar_lookup=$(mktemp "$tmpdir/.batch_qlookup.XXXXXX")
+		awk -F'\t' '{print $2 "\t" $3}' "$_quar_sess_block" > "$_quar_lookup"
+		_updated_sess=$(mktemp "$tmpdir/.batch_usess.XXXXXX")
+		awk -F'\t' -v OFS='\t' '
+		NR==FNR { quar[$1]=$2; next }
+		/^#/ { print; next }
+		{ if ($2 in quar) $3 = quar[$2]; print }
+		' "$_quar_lookup" "$scan_session" > "$_updated_sess"
+		cat "$_updated_sess" > "$scan_session"
+		command rm -f "$_quar_lookup" "$_updated_sess"
+	fi
+
+	# Summary logging
+	eout "{quar} $_quar_count files quarantined [$_stage]" 1
+	if [ "$_quar_count" -le 50 ] && [ -s "$_quar_sess_block" ]; then
+		# Emit per-file elog from quarantine session block (only successfully quarantined files)
+		# Format: sig\tfilepath\tquarpath (tab-delimited)
+		while IFS=$'\t' read -r _qsig _qfp _qdest; do
+			_lmd_elog_event "$ELOG_EVT_QUARANTINE_ADDED" "warn" "quarantined $_qfp" "file=$_qfp" "sig=$_qsig"
+		done < "$_quar_sess_block"
+	else
+		_lmd_elog_event "$ELOG_EVT_QUARANTINE_ADDED" "warn" "$_quar_count files quarantined [$_stage]" "count=$_quar_count" "stage=$_stage"
+	fi
+
+	# Run clean on quarantined files if enabled
+	if [ "$quarantine_clean" == "1" ] && [ "$clean_state" != "1" ]; then
+		while IFS=$'\t' read -r _fp _sig _hash _own _grp _mode _sz _times _inode; do
+			_fname="${_fp##*/}"
+			[ -z "$_inode" ] && _inode="$$"
+			_dest="$quardir/$_fname.$_inode"
+			if [ -f "$_dest" ]; then
+				hitname="$_sig"
+				file_owner="$_own"
+				file_group="$_grp"
+				file_mode="$_mode"
+				file_size="$_sz"
+				md5_hash="$_hash"
+				unset clean_state
+				clean "$_dest" "$_sig" "$_own.$_grp" "$_mode" "$_sz" "$_hash" "$_fp"
+			fi
+		done < "$_enriched"
+	fi
+
+	command rm -f "$_quar_hist_block" "$_quar_sess_block" "$_inode_map"
+}
+
+_flush_hit_batch() {
+	# Orchestrator: stat-gather -> record-hits -> quarantine for a batch of hits.
+	local _manifest="$1" _stage="$2"
+	if [ ! -s "$_manifest" ]; then
+		return 0
+	fi
+
+	# Clear TTY progress line before eout writes hit summary
+	_scan_progress_clear
+
+	# Enrich with stat + md5
+	local _enriched
+	_enriched=$(mktemp "$tmpdir/.batch_enriched.XXXXXX")
+	_batch_stat_gather "$_manifest" "$_enriched"
+
+	if [ ! -s "$_enriched" ]; then
+		command rm -f "$_enriched"
+		return 0
+	fi
+
+	# Record hits (hits_history, scan_session, eout, elog)
+	_batch_record_hits "$_enriched" "$_stage"
+
+	# Update progress counter
+	local _c
+	_c=$($wc -l < "$_enriched")
+	progress_hits=$(( ${progress_hits:-0} + _c ))
+
+	# Quarantine if enabled
+	if [ "$quarantine_hits" == "1" ] && [ -d "$quardir" ]; then
+		_batch_quarantine "$_enriched" "$_stage"
+	fi
+
+	command rm -f "$_enriched"
+}
+
+_quarantine_file() {
+	local _file="$1" _hitname="$2" _verbose="${3:-}"
+	local file_name="${_file##*/}"
+	local rnd
+	rnd=$($stat -c %i "$_file" 2>/dev/null || echo "$$")
+	chattr -ia "$_file" 2>/dev/null
+	if ! command mv "$_file" "$quardir/$file_name.$rnd" 2>/dev/null; then  # stderr suppressed: error handled by if-check
+		eout "{quar} file disappeared before quarantine: '$_file'" $_verbose
+		return 1
+	fi
+	touch --no-create "$quardir/$file_name.$rnd"
+	if [ "$pub" == "1" ]; then
+		chmod 400 "$quardir/$file_name.$rnd"
+	else
+		chmod 000 "$quardir/$file_name.$rnd"
+		chown root:root "$quardir/$file_name.$rnd"
+	fi
+	printf '%s\n%s\n' "# owner:group:mode:size(b):md5:atime(epoch):mtime(epoch):ctime(epoch):file(path)" "$file_owner:$file_group:$file_mode:$file_size:$md5_hash:$file_times:$_file" > "$quardir/$file_name.$rnd.info"
+	eout "{quar} malware quarantined from '$_file' to '$quardir/$file_name.$rnd'" $_verbose
+	_lmd_elog_event "$ELOG_EVT_QUARANTINE_ADDED" "warn" "quarantined $_file" "file=$_file" "sig=$_hitname"
+	echo "$utime:$_hitname:$_file:$file_owner:$file_group:$md5_hash:$file_size:$quardir/$file_name.$rnd" >> "$quar_history"
+	_quar_dest="$quardir/$file_name.$rnd"
+}
+
+quar_hitlist() {
+	local hitlist
+	hitlist=$(_session_resolve "$1")
+	[ -z "$hitlist" ] && hitlist="$sessdir/session.hits.$1"
+	if [ -f "$hitlist" ]; then
+		if _session_is_tsv "$hitlist"; then
+			# TSV format: field 1=sig, field 2=filepath, field 3=quarpath
+			if [ "$quarantine_clean" == "1" ]; then
+				local _sig _fp _qp _rest
+				while IFS=$'\t' read -r _sig _fp _qp _rest; do
+					[ -z "$_sig" ] && continue
+					[[ "$_sig" == "#"* ]] && continue
+					if [ -f "$_fp" ]; then
+						get_filestat "$_fp" 1
+						if [ "$quarantine_suspend_user" == "1" ]; then
+							quarantine_suspend_user "$_fp"
+						fi
+						_quarantine_file "$_fp" "$_sig" 1 || continue
+						if [ "$clean_state" != "1" ]; then
+							unset clean_state
+							hitname="$_sig"
+							clean "$_quar_dest" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash" "$_fp"
+						fi
+					fi
+				done < "$hitlist"
+			else
+				# Batch path: extract filepath+sig into manifest for _batch_stat_gather
+				local _qh_manifest _qh_enriched
+				_qh_manifest=$(mktemp "$tmpdir/.qh_manifest.XXXXXX")
+				_qh_enriched=$(mktemp "$tmpdir/.qh_enriched.XXXXXX")
+				awk -F'\t' '!/^#/{if ($2 != "") print $2 "\t" $1}' "$hitlist" > "$_qh_manifest"
+				_batch_stat_gather "$_qh_manifest" "$_qh_enriched"
+				if [ -s "$_qh_enriched" ]; then
+					local _saved_qh="$quarantine_hits"
+					quarantine_hits=1
+					_batch_quarantine "$_qh_enriched" "quarantine"
+					quarantine_hits="$_saved_qh"
+				fi
+				command rm -f "$_qh_manifest" "$_qh_enriched"
+			fi
+		else
+			# Legacy format: "sig : path"
+			if [ "$quarantine_clean" == "1" ]; then
+				local _qh_line
+				while IFS= read -r _qh_line; do
+					[ -z "$_qh_line" ] && continue
+					file_hitname="${_qh_line%% : *}"
+					file="${_qh_line#* : }"
+					if [ -z "$file_hitname" ] || [ "$file_hitname" = "$_qh_line" ]; then
+						file_hitname="unknown"
+					fi
+					if [ -f "$file" ]; then
+						get_filestat "$file" 1
+						if [ "$quarantine_suspend_user" == "1" ]; then
+							quarantine_suspend_user "$file"
+						fi
+						_quarantine_file "$file" "$file_hitname" 1 || continue
+						if [ "$clean_state" != "1" ]; then
+							unset clean_state
+							hitname="$file_hitname"
+							clean "$_quar_dest" "$hitname" "$file_owner.$file_group" "$file_mode" "$file_size" "$md5_hash" "$file"
+						fi
+					fi
+				done < "$hitlist"
+			else
+				local _qh_manifest _qh_enriched
+				_qh_manifest=$(mktemp "$tmpdir/.qh_manifest.XXXXXX")
+				_qh_enriched=$(mktemp "$tmpdir/.qh_enriched.XXXXXX")
+				awk -F' : ' '{if ($2 != "") print $2 "\t" $1}' "$hitlist" > "$_qh_manifest"
+				_batch_stat_gather "$_qh_manifest" "$_qh_enriched"
+				if [ -s "$_qh_enriched" ]; then
+					local _saved_qh="$quarantine_hits"
+					quarantine_hits=1
+					_batch_quarantine "$_qh_enriched" "quarantine"
+					quarantine_hits="$_saved_qh"
+				fi
+				command rm -f "$_qh_manifest" "$_qh_enriched"
+			fi
+		fi
+	else
+		echo "{quar} invalid quarantine hit list, aborting."
+		exit 1
+	fi
+}
+

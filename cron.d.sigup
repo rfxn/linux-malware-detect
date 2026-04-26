@@ -1,0 +1,4 @@
+# LMD independent signature update
+# Interval controlled by sigup_interval in conf.maldet
+# Managed by maldet install.sh — do not edit manually
+0 */6 * * * root /usr/local/maldetect/maldet --cron-sigup >> /dev/null 2>&1

@@ -1,0 +1,564 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Post-scan hook dispatcher: validation, env setup, JSON building, sync/async execution
+
+# Source guard
+[[ -n "${_LMD_HOOK_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_HOOK_LOADED=1
+
+# _scan_hook_validate hook_path — security validation (root-owned, not world-writable); returns 0/1
+_scan_hook_validate() {
+	local _hook_path="$1"
+	local _owner _perms _parent _parent_perms _target_owner _last_digit
+
+	# Check 1: file must exist
+	if [ ! -f "$_hook_path" ]; then
+		eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: file not found"
+		return 1
+	fi
+
+	# Check 2: file must be executable
+	if [ ! -x "$_hook_path" ]; then
+		eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: not executable"
+		return 1
+	fi
+
+	# shellcheck disable=SC2154
+	# $stat and $os_freebsd are globals from internals.conf (sourced before sub-libs)
+	if [ -n "$stat" ]; then
+		# Check 3 & 4: root-owned, not world-writable
+		if [ "$os_freebsd" = "1" ]; then
+			_owner=$("$stat" -f '%Su' "$_hook_path" 2>/dev/null) || _owner="" # stat may fail on broken symlinks; fallback handled below
+			_perms=$("$stat" -f '%Lp' "$_hook_path" 2>/dev/null) || _perms="" # stat may fail on broken symlinks; fallback handled below
+		else
+			_owner=$("$stat" -c '%U' "$_hook_path" 2>/dev/null) || _owner="" # stat may fail on broken symlinks; fallback handled below
+			_perms=$("$stat" -c '%a' "$_hook_path" 2>/dev/null) || _perms="" # stat may fail on broken symlinks; fallback handled below
+		fi
+
+		if [ "$_owner" != "root" ]; then
+			eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: not owned by root (owner: ${_owner:-unknown})"
+			return 1
+		fi
+
+		# World-writable: last octal digit has bit 2 set (2, 3, 6, 7)
+		_last_digit="${_perms: -1}"
+		case "$_last_digit" in
+			2|3|6|7)
+				eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: world-writable"
+				return 1
+				;;
+		esac
+	fi
+
+	# Check 5: parent directory must not be world-writable
+	_parent="${_hook_path%/*}"
+	if [ -z "$_parent" ]; then
+		_parent="/"
+	fi
+	if [ -n "$stat" ] && [ -d "$_parent" ]; then
+		if [ "$os_freebsd" = "1" ]; then
+			_parent_perms=$("$stat" -f '%Lp' "$_parent" 2>/dev/null) || _parent_perms="" # stat may fail if parent was removed; safe to skip check
+		else
+			_parent_perms=$("$stat" -c '%a' "$_parent" 2>/dev/null) || _parent_perms="" # stat may fail if parent was removed; safe to skip check
+		fi
+		local _parent_last="${_parent_perms: -1}"
+		case "$_parent_last" in
+			2|3|6|7)
+				eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: parent directory is world-writable"
+				return 1
+				;;
+		esac
+	fi
+
+	# Check 6: if symlink, resolve target ownership
+	if [ -L "$_hook_path" ] && [ -n "$stat" ]; then
+		if [ "$os_freebsd" = "1" ]; then
+			_target_owner=$("$stat" -f '%Su' "$_hook_path" 2>/dev/null) || _target_owner="" # stat may fail on broken symlink target; fallback handled below
+		else
+			_target_owner=$("$stat" -c '%U' "$_hook_path" 2>/dev/null) || _target_owner="" # stat may fail on broken symlink target; fallback handled below
+		fi
+		if [ "$_target_owner" != "root" ]; then
+			eout "{hook} ERROR: post_scan_hook '$_hook_path' failed validation: symlink target not owned by root (owner: ${_target_owner:-unknown})"
+			return 1
+		fi
+	fi
+
+	return 0
+}
+
+# _scan_hook_build_env scan_type — export LMD_* env vars and unset credential vars before hook exec
+_scan_hook_build_env() {
+	local _scan_type="$1"
+	local _hits _files _elapsed _session_file _engine _fmt _exit_code
+
+	# Resolve hit count and scan metrics by scan_type context
+	case "$_scan_type" in
+		cli)
+			_hits="${tot_hits:-0}"
+			_files="${tot_files:-0}"
+			_elapsed="${scan_et:-0}"
+			;;
+		digest)
+			# Monitor digest: scan() vars (tot_hits, tot_files) are not populated.
+			# Derive hit count from session TSV line count, excluding comment lines.
+			_hits=0
+			# shellcheck disable=SC2154
+			# $scan_session is a global set by scan() — may be unset in digest context
+			if [ -f "${scan_session:-}" ]; then
+				_hits=$(grep -c '^[^#]' "$scan_session" 2>/dev/null) || _hits=0 # grep -c exits 1 when count is 0
+			fi
+			_files=0   # Not applicable for digest aggregation
+			_elapsed=0 # Not applicable for digest aggregation
+			;;
+		escalation)
+			# Monitor escalation: use cycle-level hit count from monitor context
+			_hits="${_cycle_hits:-0}"
+			_files=0
+			_elapsed=0
+			;;
+		*)
+			_hits="${tot_hits:-0}"
+			_files="${tot_files:-0}"
+			_elapsed="${scan_et:-0}"
+			;;
+	esac
+
+	# Derive engine label from config (scan()'s _engine_type is a local var)
+	# shellcheck disable=SC2154
+	# $scan_clamscan is a global config var from conf.maldet
+	if [ "${scan_clamscan:-0}" = "1" ]; then
+		_engine="clamav"
+	else
+		_engine="native"
+	fi
+
+	_exit_code=0
+	[ "${_hits:-0}" -gt 0 ] && _exit_code=2
+
+	_fmt="${post_scan_hook_format:-args}"
+
+	# Resolve session file for file/json formats
+	_session_file=""
+	if [ "$_fmt" = "file" ] || [ "$_fmt" = "json" ]; then
+		# shellcheck disable=SC2154
+		# $scanid, $sessdir are globals set by scan() at scan start
+		if [ -n "${scanid:-}" ]; then
+			if [ -f "$sessdir/session.tsv.$scanid" ]; then
+				_session_file="$sessdir/session.tsv.$scanid"
+			elif [ -f "$sessdir/session.hits.$scanid" ]; then
+				_session_file="$sessdir/session.hits.$scanid"
+			elif [ -f "${scan_session:-}" ]; then
+				_session_file="$scan_session"
+			fi
+		fi
+	fi
+
+	export LMD_SCAN_TYPE="$_scan_type"
+	export LMD_SCANID="${scanid:-}"
+	export LMD_HITS="$_hits"
+	export LMD_FILES="$_files"
+	export LMD_CLEANED="${tot_cl:-0}"
+	export LMD_QUARANTINED="0"
+	# shellcheck disable=SC2154
+	# $hrspath is the human-readable scan path global set in scan()
+	export LMD_PATH="${hrspath:-}"
+	export LMD_EXIT_CODE="$_exit_code"
+	export LMD_SCAN_START="${scan_start_hr:--}"
+	export LMD_ELAPSED="$_elapsed"
+	export LMD_ENGINE="$_engine"
+	export LMD_SESSION_FILE="$_session_file"
+	export LMD_HOOK_FORMAT="$_fmt"
+	# shellcheck disable=SC2154
+	# $lmd_version is a global from internals.conf
+	export LMD_VERSION="${lmd_version:-}"
+	export LMD_MONITOR_UPTIME="0"
+	export LMD_HOOK_HITS="$_hits"
+
+	# Clear sensitive credential variables — must not reach the hook process.
+	# ORDERING: in sync mode, unset runs in the main process and is permanent.
+	# Call sites MUST fire after genalert() completes — alerting needs these vars.
+	unset slack_token smtp_pass smtp_user telegram_bot_token
+	unset discord_webhook_url elk_host ALERT_SMTP_PASS ALERT_SMTP_USER
+}
+
+# _scan_hook_build_json scan_type — build JSON blob for hook stdin (no jq dependency)
+_scan_hook_build_json() {
+	local _scan_type="$1"
+	local _hits _files _elapsed _engine _exit_code _session_file
+	local _escaped_path _escaped_session _escaped_scanid _escaped_engine
+
+	case "$_scan_type" in
+		cli)
+			_hits="${tot_hits:-0}"
+			_files="${tot_files:-0}"
+			_elapsed="${scan_et:-0}"
+			;;
+		digest)
+			_hits=0
+			if [ -f "${scan_session:-}" ]; then
+				_hits=$(grep -c '^[^#]' "$scan_session" 2>/dev/null) || _hits=0 # grep -c exits 1 when count is 0
+			fi
+			_files=0
+			_elapsed=0
+			;;
+		escalation)
+			_hits="${_cycle_hits:-0}"
+			_files=0
+			_elapsed=0
+			;;
+		*)
+			_hits="${tot_hits:-0}"
+			_files="${tot_files:-0}"
+			_elapsed="${scan_et:-0}"
+			;;
+	esac
+
+	# shellcheck disable=SC2154
+	# $scan_clamscan is a global config var from conf.maldet
+	if [ "${scan_clamscan:-0}" = "1" ]; then
+		_engine="clamav"
+	else
+		_engine="native"
+	fi
+
+	_exit_code=0
+	[ "${_hits:-0}" -gt 0 ] && _exit_code=2
+
+	# shellcheck disable=SC2154
+	# $scanid, $sessdir are globals set by scan() at scan start
+	_session_file=""
+	if [ -n "${scanid:-}" ]; then
+		if [ -f "$sessdir/session.tsv.$scanid" ]; then
+			_session_file="$sessdir/session.tsv.$scanid"
+		elif [ -f "$sessdir/session.hits.$scanid" ]; then
+			_session_file="$sessdir/session.hits.$scanid"
+		elif [ -f "${scan_session:-}" ]; then
+			_session_file="$scan_session"
+		fi
+	fi
+
+	# shellcheck disable=SC2154
+	# $hrspath is the human-readable scan path global set in scan()
+	_escaped_path=$(_json_escape_string "${hrspath:-}")
+	_escaped_session=$(_json_escape_string "$_session_file")
+	_escaped_scanid=$(_json_escape_string "${scanid:-}")
+	_escaped_engine=$(_json_escape_string "$_engine")
+
+	printf '{\n'
+	printf '  "version": "1.0",\n'
+	printf '  "scan_type": "%s",\n' "$_scan_type"
+	printf '  "scan_id": "%s",\n' "$_escaped_scanid"
+	printf '  "hits": %s,\n' "$_hits"
+	printf '  "files": %s,\n' "$_files"
+	printf '  "cleaned": %s,\n' "${tot_cl:-0}"
+	printf '  "quarantined": %s,\n' "0"
+	printf '  "scan_start": %s,\n' "${scan_start:-0}"
+	printf '  "elapsed": %s,\n' "$_elapsed"
+	printf '  "exit_code": %s,\n' "$_exit_code"
+	printf '  "engine": "%s",\n' "$_escaped_engine"
+	printf '  "path": "%s",\n' "$_escaped_path"
+	printf '  "session_file": "%s"\n' "$_escaped_session"
+	printf '}\n'
+}
+
+# _scan_hook_exec_sync hook_path timeout scan_type json_stdin — run hook synchronously (exit 124 = timeout)
+_scan_hook_exec_sync() {
+	local _hook_path="$1"
+	local _timeout="$2"
+	local _scan_type="$3"
+	local _json_stdin="$4"
+
+	local _timeout_cmd
+	_timeout_cmd=$(command -v timeout 2>/dev/null) || _timeout_cmd="" # may be absent on minimal installs
+
+	if [ -z "$_timeout_cmd" ] && [ "$_timeout" -gt 0 ]; then
+		eout "{hook} WARNING: 'timeout' command not found; hook will run without timeout protection"
+	fi
+
+	local _hook_hits="${tot_hits:-0}"
+	case "$_scan_type" in
+		digest)
+			_hook_hits=0
+			if [ -f "${scan_session:-}" ]; then
+				_hook_hits=$(grep -c '^[^#]' "$scan_session" 2>/dev/null) || _hook_hits=0 # grep -c exits 1 when count is 0
+			fi
+			;;
+		escalation)
+			_hook_hits="${_cycle_hits:-0}"
+			;;
+	esac
+	local _hook_exit_code=0
+	[ "${_hook_hits:-0}" -gt 0 ] && _hook_exit_code=2
+
+	# shellcheck disable=SC2154
+	# $scanid, $tot_files, $hrspath are globals from scan() context
+	local _hook_args=(
+		"${scanid:-}"
+		"$_hook_hits"
+		"${tot_files:-0}"
+		"$_hook_exit_code"
+		"$_scan_type"
+		"${hrspath:-}"
+	)
+
+	_scan_hook_build_env "$_scan_type"
+
+	# Capture stderr for diagnostics on non-zero exit
+	local _stderr_tmp
+	# shellcheck disable=SC2154
+	# $tmpdir is a global from internals.conf
+	_stderr_tmp=$(command mktemp "$tmpdir/.hook_err.XXXXXX" 2>/dev/null) || _stderr_tmp="" # mktemp may fail if tmpdir is full; fallback to empty (skip stderr capture)
+
+	local _hook_rc=0
+
+	if [ -n "$_json_stdin" ]; then
+		# json format: pipe JSON to hook stdin
+		if [ -n "$_timeout_cmd" ] && [ "$_timeout" -gt 0 ]; then
+			printf '%s\n' "$_json_stdin" \
+				| "$_timeout_cmd" "$_timeout" \
+					"$_hook_path" "${_hook_args[@]}" \
+					2>"${_stderr_tmp:-/dev/null}" # stderr captured for failure diagnostics
+			_hook_rc=$?
+		else
+			printf '%s\n' "$_json_stdin" \
+				| "$_hook_path" "${_hook_args[@]}" \
+					2>"${_stderr_tmp:-/dev/null}" # stderr captured for failure diagnostics
+			_hook_rc=$?
+		fi
+	else
+		# args/file format: no stdin
+		if [ -n "$_timeout_cmd" ] && [ "$_timeout" -gt 0 ]; then
+			"$_timeout_cmd" "$_timeout" \
+				"$_hook_path" "${_hook_args[@]}" \
+				</dev/null \
+				2>"${_stderr_tmp:-/dev/null}" # stderr captured for failure diagnostics
+			_hook_rc=$?
+		else
+			"$_hook_path" "${_hook_args[@]}" \
+				</dev/null \
+				2>"${_stderr_tmp:-/dev/null}" # stderr captured for failure diagnostics
+			_hook_rc=$?
+		fi
+	fi
+
+	if [ "$_hook_rc" -eq 124 ]; then
+		eout "{hook} post-scan hook timeout after ${_timeout}s: $_hook_path"
+		_lmd_elog_event "${ELOG_EVT_HOOK_TIMEOUT:-hook_timeout}" "warning" \
+			"hook timed out after ${_timeout}s" "hook=$_hook_path"
+	elif [ "$_hook_rc" -ne 0 ]; then
+		local _err_snippet=""
+		if [ -f "${_stderr_tmp:-}" ] && [ -s "$_stderr_tmp" ]; then
+			_err_snippet=$(command dd if="$_stderr_tmp" bs=1 count=200 2>/dev/null) || _err_snippet="" # dd for byte-limited stderr read
+		fi
+		eout "{hook} post-scan hook exited with code $_hook_rc: $_hook_path${_err_snippet:+ — $_err_snippet}"
+		_lmd_elog_event "${ELOG_EVT_HOOK_FAILED:-hook_failed}" "warning" \
+			"hook exited non-zero" "hook=$_hook_path" "rc=$_hook_rc"
+	else
+		_lmd_elog_event "${ELOG_EVT_HOOK_COMPLETED:-hook_completed}" "info" \
+			"hook completed" "hook=$_hook_path" "rc=$_hook_rc"
+	fi
+
+	[ -f "${_stderr_tmp:-}" ] && command rm -f "$_stderr_tmp" # temp cleanup; ignore error if already removed
+
+	return "$_hook_rc"
+}
+
+# _scan_hook_exec_async hook_path timeout scan_type json_stdin — fork to background; survives LMD exit
+_scan_hook_exec_async() {
+	local _hook_path="$1"
+	local _timeout="$2"
+	local _scan_type="$3"
+	local _json_stdin="$4"
+
+	# Snapshot values now (before fork) so the subshell captures current state.
+	# Globals may change after fork if LMD processes another scan.
+	local _snap_scanid="${scanid:-}"
+	local _snap_hits
+	local _snap_files="${tot_files:-0}"
+	local _snap_path="${hrspath:-}"
+	local _snap_cleaned="${tot_cl:-0}"
+	local _snap_elapsed
+	local _snap_engine
+	local _snap_session=""
+	local _snap_scan_start="${scan_start_hr:--}"
+	local _snap_version="${lmd_version:-}"
+	local _snap_fmt="${post_scan_hook_format:-args}"
+
+	# Resolve hits and elapsed by scan_type
+	case "$_scan_type" in
+		cli)
+			_snap_hits="${tot_hits:-0}"
+			_snap_elapsed="${scan_et:-0}"
+			;;
+		digest)
+			_snap_hits=0
+			if [ -f "${scan_session:-}" ]; then
+				_snap_hits=$(grep -c '^[^#]' "$scan_session" 2>/dev/null) || _snap_hits=0 # grep -c exits 1 when count is 0
+			fi
+			_snap_elapsed=0
+			;;
+		escalation)
+			_snap_hits="${_cycle_hits:-0}"
+			_snap_elapsed=0
+			;;
+		*)
+			_snap_hits="${tot_hits:-0}"
+			_snap_elapsed="${scan_et:-0}"
+			;;
+	esac
+
+	# shellcheck disable=SC2154
+	# $scan_clamscan is a global config var from conf.maldet
+	if [ "${scan_clamscan:-0}" = "1" ]; then
+		_snap_engine="clamav"
+	else
+		_snap_engine="native"
+	fi
+
+	local _snap_exit_code=0
+	[ "${_snap_hits:-0}" -gt 0 ] && _snap_exit_code=2
+
+	# Resolve session file path before fork
+	# shellcheck disable=SC2154
+	# $scanid, $sessdir are globals from scan() context
+	if [ "$_snap_fmt" = "file" ] || [ "$_snap_fmt" = "json" ]; then
+		if [ -n "${scanid:-}" ]; then
+			if [ -f "$sessdir/session.tsv.$scanid" ]; then
+				_snap_session="$sessdir/session.tsv.$scanid"
+			elif [ -f "$sessdir/session.hits.$scanid" ]; then
+				_snap_session="$sessdir/session.hits.$scanid"
+			elif [ -f "${scan_session:-}" ]; then
+				_snap_session="${scan_session:-}"
+			fi
+		fi
+	fi
+
+	local _timeout_cmd
+	_timeout_cmd=$(command -v timeout 2>/dev/null) || _timeout_cmd="" # may be absent on minimal installs
+
+	local _hook_args=(
+		"$_snap_scanid"
+		"$_snap_hits"
+		"$_snap_files"
+		"$_snap_exit_code"
+		"$_scan_type"
+		"$_snap_path"
+	)
+
+	(
+		# Replace subshell fds: prevents inherited pipe fds from blocking the parent
+		exec >/dev/null 2>&1
+
+		export LMD_SCAN_TYPE="$_scan_type"
+		export LMD_SCANID="$_snap_scanid"
+		export LMD_HITS="$_snap_hits"
+		export LMD_FILES="$_snap_files"
+		export LMD_CLEANED="$_snap_cleaned"
+		export LMD_QUARANTINED="0"
+		export LMD_PATH="$_snap_path"
+		export LMD_EXIT_CODE="$_snap_exit_code"
+		export LMD_SCAN_START="$_snap_scan_start"
+		export LMD_ELAPSED="$_snap_elapsed"
+		export LMD_ENGINE="$_snap_engine"
+		export LMD_SESSION_FILE="$_snap_session"
+		export LMD_HOOK_FORMAT="$_snap_fmt"
+		export LMD_VERSION="$_snap_version"
+		export LMD_MONITOR_UPTIME="0"
+		export LMD_HOOK_HITS="$_snap_hits"
+
+		unset slack_token smtp_pass smtp_user telegram_bot_token
+		unset discord_webhook_url elk_host ALERT_SMTP_PASS ALERT_SMTP_USER
+
+		if [ -n "$_json_stdin" ]; then
+			if [ -n "$_timeout_cmd" ] && [ "$_timeout" -gt 0 ]; then
+				printf '%s\n' "$_json_stdin" \
+					| "$_timeout_cmd" "$_timeout" \
+						"$_hook_path" "${_hook_args[@]}"
+			else
+				printf '%s\n' "$_json_stdin" \
+					| "$_hook_path" "${_hook_args[@]}"
+			fi
+		else
+			if [ -n "$_timeout_cmd" ] && [ "$_timeout" -gt 0 ]; then
+				"$_timeout_cmd" "$_timeout" \
+					"$_hook_path" "${_hook_args[@]}" \
+					</dev/null
+			else
+				"$_hook_path" "${_hook_args[@]}" </dev/null
+			fi
+		fi
+	) &
+}
+
+# _scan_hook_dispatch hook_type scan_type — gate, validate, and dispatch post_scan_hook
+# Monitor digest/escalation always forces async
+_scan_hook_dispatch() {
+	local _hook_type="$1"
+	local _scan_type="$2"
+	local _hook="${post_scan_hook:-}"
+
+	# Gate 1: feature disabled
+	[ -z "$_hook" ] && return 0
+
+	# Gate 2: scan type filter
+	local _on="${post_scan_hook_on:-all}"
+	if [ "$_on" = "cli" ] && [ "$_scan_type" != "cli" ]; then return 0; fi
+	if [ "$_on" = "digest" ] && [ "$_scan_type" = "cli" ]; then return 0; fi
+
+	# Gate 3: minimum hits threshold
+	local _min_hits="${post_scan_hook_min_hits:-1}"
+	local _hits="${tot_hits:-0}"
+
+	# Digest/escalation: tot_hits not set by scan(); derive from available context
+	if [ "$_scan_type" = "digest" ] && [ "$_hits" = "0" ] && [ -f "${scan_session:-}" ]; then
+		_hits=$(grep -c '^[^#]' "$scan_session" 2>/dev/null) || _hits=0 # grep -c exits 1 when count is 0
+	elif [ "$_scan_type" = "escalation" ]; then
+		_hits="${_cycle_hits:-$_hits}"
+	fi
+
+	if [ "$_min_hits" -gt 0 ] && [ "$_hits" -lt "$_min_hits" ]; then return 0; fi
+
+	# Gate 4: validate hook path
+	if ! _scan_hook_validate "$_hook"; then
+		_lmd_elog_event "${ELOG_EVT_HOOK_FAILED:-hook_failed}" "warning" \
+			"hook validation failed" "hook=$_hook"
+		return 0
+	fi
+
+	# Timeout: clamp values 1-4 to 5; 0 disables timeout
+	local _timeout="${post_scan_hook_timeout:-60}"
+	if [ "$_timeout" -gt 0 ] && [ "$_timeout" -lt 5 ]; then
+		_timeout=5
+	fi
+
+	# Execution mode
+	# Monitor digest/escalation always force async regardless of config
+	local _exec="${post_scan_hook_exec:-async}"
+	if [ "$_scan_type" = "digest" ] || [ "$_scan_type" = "escalation" ]; then
+		_exec="async"
+	fi
+
+	local _format="${post_scan_hook_format:-args}"
+	local _json_stdin=""
+	if [ "$_format" = "json" ]; then
+		_json_stdin=$(_scan_hook_build_json "$_scan_type")
+	fi
+
+	eout "{hook} ${_hook_type}-scan hook started: $_hook ($_exec, $_format)" 1
+	_lmd_elog_event "${ELOG_EVT_HOOK_STARTED:-hook_started}" "info" \
+		"hook started" \
+		"hook=$_hook" "type=$_scan_type" "exec=$_exec" "format=$_format"
+
+	if [ "$_exec" = "sync" ]; then
+		_scan_hook_exec_sync "$_hook" "$_timeout" "$_scan_type" "$_json_stdin"
+	else
+		_scan_hook_exec_async "$_hook" "$_timeout" "$_scan_type" "$_json_stdin"
+	fi
+}

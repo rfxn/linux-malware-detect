@@ -1,0 +1,1399 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Scan lifecycle management: kill, pause/unpause, stop/continue, list, meta, sentinel IPC
+
+# Source guard
+[[ -n "${_LMD_LIFECYCLE_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_LIFECYCLE_LOADED=1
+
+# _lifecycle_write_meta scanid pid ppid path total_files workers engine hashtype stages options
+# Writes $sessdir/scan.meta.$scanid with #LMD_META:v1 header.
+# Atomic: writes to .tmp then renames.
+_lifecycle_write_meta() {
+	local _scanid="$1" _pid="$2" _ppid="$3" _path="$4"
+	local _total_files="$5" _workers="$6" _engine="$7"
+	local _hashtype="$8" _stages="$9"
+	shift 9
+	local _options="$1"
+	local _meta_file="$sessdir/scan.meta.$_scanid"
+	local _tmp_file="$_meta_file.tmp"
+	local _started _started_hr _sig_ver _quar_enabled
+
+	_started=$(command date +%s)
+	_started_hr=$(command date "+%b %d %Y %H:%M:%S %z")
+
+	# Read sig version from on-disk file (first line), fallback to "unknown"
+	if [ -f "$sigdir/maldet.sigs.ver" ]; then
+		IFS= read -r _sig_ver < "$sigdir/maldet.sigs.ver"
+	else
+		_sig_ver="unknown"
+	fi
+	[ -z "$_sig_ver" ] && _sig_ver="unknown"
+	_quar_enabled="${quarantine_hits:-0}"
+
+	# ns_pid: namespace PID used for temp file grouping ($$ — always the
+	# top-level shell PID, even in background forks).  Separate from pid
+	# (which is BASHPID — the real process for liveness/signal checks).
+	command cat > "$_tmp_file" <<EOF
+#LMD_META:v1
+pid=$_pid
+ns_pid=$$
+ppid=$_ppid
+started=$_started
+started_hr=$_started_hr
+path=$_path
+total_files=$_total_files
+workers=$_workers
+engine=$_engine
+hashtype=$_hashtype
+stages=$_stages
+sig_version=$_sig_ver
+options=$_options
+quarantine_enabled=$_quar_enabled
+state=running
+EOF
+
+	command mv -f "$_tmp_file" "$_meta_file"
+}
+
+# _lifecycle_update_meta scanid key value
+# Appends key=value to existing meta file. Last-value-wins on read.
+_lifecycle_update_meta() {
+	local _scanid="$1" _key="$2" _value="$3"
+	local _meta_file="$sessdir/scan.meta.$_scanid"
+
+	[ -f "$_meta_file" ] || return 1
+
+	printf '%s=%s\n' "$_key" "$_value" >> "$_meta_file"
+}
+
+# _lifecycle_read_meta scanid — parse scan.meta into _meta_* vars (last-value-wins); returns 1 if missing
+# shellcheck disable=SC2034
+_lifecycle_read_meta() {
+	local _scanid="$1"
+	local _meta_file="$sessdir/scan.meta.$_scanid"
+	local _key _value
+
+	[ -f "$_meta_file" ] || return 1
+
+	# Initialize all meta variables to empty (caller scope — no local)
+	_meta_pid=""
+	_meta_ns_pid=""
+	_meta_ppid=""
+	_meta_started=""
+	_meta_started_hr=""
+	_meta_path=""
+	_meta_total_files=""
+	_meta_workers=""
+	_meta_engine=""
+	_meta_hashtype=""
+	_meta_stages=""
+	_meta_sig_version=""
+	_meta_options=""
+	_meta_quarantine_enabled=""
+	_meta_state=""
+	_meta_stage=""
+	_meta_progress_pos=""
+	_meta_progress_total=""
+	_meta_hits=""
+	_meta_stopped=""
+	_meta_stopped_hr=""
+	_meta_completed=""
+	_meta_completed_hr=""
+	_meta_elapsed=""
+
+	while IFS='=' read -r _key _value; do
+		case "$_key" in
+			"#"*|"") continue ;;
+		esac
+		case "$_key" in
+			pid)             _meta_pid="$_value" ;;
+			ns_pid)          _meta_ns_pid="$_value" ;;
+			ppid)            _meta_ppid="$_value" ;;
+			started)         _meta_started="$_value" ;;
+			started_hr)      _meta_started_hr="$_value" ;;
+			path)            _meta_path="$_value" ;;
+			total_files)     _meta_total_files="$_value" ;;
+			workers)         _meta_workers="$_value" ;;
+			engine)          _meta_engine="$_value" ;;
+			hashtype)        _meta_hashtype="$_value" ;;
+			stages)          _meta_stages="$_value" ;;
+			sig_version)     _meta_sig_version="$_value" ;;
+			options)         _meta_options="$_value" ;;
+			quarantine_enabled) _meta_quarantine_enabled="$_value" ;;
+			state)           _meta_state="$_value" ;;
+			stage)           _meta_stage="$_value" ;;
+			progress_pos)    _meta_progress_pos="$_value" ;;
+			progress_total)  _meta_progress_total="$_value" ;;
+			hits)            _meta_hits="$_value" ;;
+			stopped)         _meta_stopped="$_value" ;;
+			stopped_hr)      _meta_stopped_hr="$_value" ;;
+			completed)       _meta_completed="$_value" ;;
+			completed_hr)    _meta_completed_hr="$_value" ;;
+			elapsed)         _meta_elapsed="$_value" ;;
+		esac
+	done < "$_meta_file"
+
+	return 0
+}
+
+# _lifecycle_detect_state scanid
+# Outputs state to stdout: running|paused|stopped|stale|killed|completed
+# Returns 1 if meta file does not exist.
+_lifecycle_detect_state() {
+	local _scanid="$1"
+
+	_lifecycle_read_meta "$_scanid" || return 1
+
+	# Terminal states — trust the recorded state
+	case "$_meta_state" in
+		completed|killed|stopped)
+			echo "$_meta_state"
+			return 0
+			;;
+	esac
+
+	# Check if process is alive (kill -0 works on FreeBSD too)
+	if kill -0 "$_meta_pid" 2>/dev/null; then  # safe: kill -0 returns 1 if no such process
+		# PID alive — check for pause sentinel
+		if [ -f "$tmpdir/.pause.$_scanid" ]; then
+			echo "paused"
+		else
+			echo "running"
+		fi
+	else
+		# PID dead but state not terminal — stale
+		echo "stale"
+	fi
+
+	return 0
+}
+
+# _lifecycle_check_sentinels scanid — detect abort/pause at worker boundaries
+# Returns: 0=continue 1=abort(kill) 2=paused 4=stop(checkpoint)
+# Abort sentinel first-line "stop" → return 4; else return 1
+_lifecycle_check_sentinels() {
+	local scanid="$1"
+	# Abort/stop takes priority over pause (E15)
+	if [ -f "$tmpdir/.abort.$scanid" ]; then
+		local _sentinel_type
+		IFS= read -r _sentinel_type < "$tmpdir/.abort.$scanid" 2>/dev/null  # safe: sentinel may vanish between check and read
+		if [ "$_sentinel_type" = "stop" ]; then
+			return 4
+		fi
+		return 1
+	fi
+	if [ -f "$tmpdir/.pause.$scanid" ]; then
+		return 2
+	fi
+	return 0
+}
+
+# _lifecycle_format_elapsed seconds — format seconds as "Xh Ym" to stdout
+_lifecycle_format_elapsed() {
+	local _secs="$1"
+	local _hours _mins
+	[ -z "$_secs" ] || [ "$_secs" = "-" ] && _secs=0
+	_hours=$((_secs / 3600))
+	_mins=$(((_secs % 3600) / 60))
+	printf '%dh %02dm' "$_hours" "$_mins"
+}
+
+# _lifecycle_list_active format verbose single_scanid — enumerate active scans and dispatch to renderer
+_lifecycle_list_active() {
+	local _format="${1:-text}" _verbose="${2:-0}" _single_scanid="${3:-}"
+	local _scanid _state _found=0
+	local _active_ids=""
+
+	if [ -n "$_single_scanid" ]; then
+		# Single scan mode
+		if [ ! -f "$sessdir/scan.meta.$_single_scanid" ]; then
+			echo "No active scans." >&2
+			return 1
+		fi
+		_state=$(_lifecycle_detect_state "$_single_scanid" 2>/dev/null) || {  # safe: stderr suppressed; missing meta handled by return 1
+			echo "No active scans." >&2
+			return 1
+		}
+		case "$_state" in
+			running|paused|stale)
+				_active_ids="$_single_scanid"
+				_found=1
+				;;
+			*)
+				echo "No active scans." >&2
+				return 1
+				;;
+		esac
+	else
+		# Enumerate all meta files
+		local _meta_file
+		for _meta_file in "$sessdir"/scan.meta.*; do
+			[ -f "$_meta_file" ] || continue
+			_scanid="${_meta_file##*scan.meta.}"
+			case "$_scanid" in
+				*.tmp) continue ;;
+			esac
+			_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip meta files that fail to parse
+			case "$_state" in
+				running|paused|stale)
+					if [ -z "$_active_ids" ]; then
+						_active_ids="$_scanid"
+					else
+						_active_ids="$_active_ids"$'\n'"$_scanid"
+					fi
+					_found=1
+					;;
+			esac
+		done
+	fi
+
+	if [ "$_found" -eq 0 ]; then
+		echo "No active scans." >&2
+		return 1
+	fi
+
+	case "$_format" in
+		json) _lifecycle_render_json_active "$_active_ids" ;;
+		tsv)  _lifecycle_render_tsv_active "$_active_ids" ;;
+		*)    _lifecycle_render_text_active "$_verbose" "$_active_ids" ;;
+	esac
+}
+
+# _lifecycle_render_text_active verbose scanids — columnar text format for terminal
+_lifecycle_render_text_active() {
+	local _verbose="$1" _ids="$2"
+	local _scanid _state _elapsed_str
+	local _count=0
+	[ -n "$_ids" ] && _count=$(printf '%s\n' "$_ids" | command grep -c '^.' || echo 0)
+
+	printf 'Active scans (%s):\n' "$_count"
+	if [ "$_verbose" = "1" ]; then
+		printf ' %-22s %-10s %-7s %-8s %-10s %-6s %-10s %-10s %-8s %-12s %-12s %s\n' \
+			"SCANID" "STATE" "PID" "ENGINE" "FILES" "HITS" "ELAPSED" "ETA" "WORKERS" "SIG_VER" "PROGRESS" "PATH"
+	else
+		printf ' %-22s %-10s %-7s %-8s %-10s %-6s %-10s %-10s %s\n' \
+			"SCANID" "STATE" "PID" "ENGINE" "FILES" "HITS" "ELAPSED" "ETA" "PATH"
+	fi
+
+	while IFS= read -r _scanid; do
+		[ -z "$_scanid" ] && continue
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unreadable meta
+		_lifecycle_read_meta "$_scanid" || continue
+
+		# For running/paused scans, compute elapsed live from started epoch;
+		# completed/killed/stale scans have _meta_elapsed already set.
+		local _elapsed_secs=0
+		if [ -n "$_meta_elapsed" ] && [ "$_meta_elapsed" != "0" ]; then
+			_elapsed_secs="$_meta_elapsed"
+		elif [ -n "$_meta_started" ] && [ "$_meta_started" != "0" ]; then
+			_elapsed_secs="$(( $(command date +%s) - _meta_started ))"
+		fi
+		_elapsed_str=$(_lifecycle_format_elapsed "$_elapsed_secs")
+
+		# ETA: (elapsed * total / processed) - elapsed; requires per-file progress.
+		# ClamAV and YARA run as opaque single-process engines — per-file progress
+		# is structurally unavailable, so ETA is always n/a for those engines.
+		local _eta_str="-"
+		local _pos="${_meta_progress_pos:-0}" _tot="${_meta_progress_total:-0}"
+		[ "$_pos" = "-" ] && _pos=0
+		[ "$_tot" = "-" ] && _tot=0
+		case "${_meta_engine:-}" in
+			clamav|clamdscan|yara) _eta_str="n/a" ;;
+			*)
+				if [ "$_pos" -gt 0 ] && [ "$_tot" -gt 0 ] && [ "$_elapsed_secs" -gt 0 ]; then
+					local _eta_secs=$(( (_elapsed_secs * _tot / _pos) - _elapsed_secs ))
+					_eta_str="~$(_lifecycle_format_elapsed "$_eta_secs")"
+				fi
+				;;
+		esac
+
+		if [ "$_verbose" = "1" ]; then
+			local _progress_str="-"
+			if [ "$_pos" -gt 0 ] && [ "$_tot" -gt 0 ]; then
+				_progress_str="${_pos}/${_tot}"
+			fi
+			printf ' %-22s %-10s %-7s %-8s %-10s %-6s %-10s %-10s %-8s %-12s %-12s %s\n' \
+				"$_scanid" "$_state" "${_meta_pid:-?}" \
+				"${_meta_engine:--}" "${_meta_total_files:--}" "${_meta_hits:-0}" \
+				"$_elapsed_str" "$_eta_str" "${_meta_workers:--}" "${_meta_sig_version:--}" "$_progress_str" \
+				"${_meta_path:--}"
+		else
+			printf ' %-22s %-10s %-7s %-8s %-10s %-6s %-10s %-10s %s\n' \
+				"$_scanid" "$_state" "${_meta_pid:-?}" \
+				"${_meta_engine:--}" "${_meta_total_files:--}" "${_meta_hits:-0}" \
+				"$_elapsed_str" "$_eta_str" "${_meta_path:--}"
+		fi
+	done <<< "$_ids"
+
+	return 0
+}
+
+# _lifecycle_list_stopped — enumerate stopped scans with valid session.checkpoint (resumable via --continue)
+_lifecycle_list_stopped() {
+	local _scanid _state _found=0
+	local _stopped_ids=""
+
+	local _meta_file
+	for _meta_file in "$sessdir"/scan.meta.*; do
+		[ -f "$_meta_file" ] || continue
+		_scanid="${_meta_file##*scan.meta.}"
+		case "$_scanid" in *.tmp) continue ;; esac
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unreadable meta
+		if [ "$_state" = "stopped" ] && [ -f "$sessdir/scan.checkpoint.$_scanid" ]; then
+			if [ -z "$_stopped_ids" ]; then
+				_stopped_ids="$_scanid"
+			else
+				_stopped_ids="$_stopped_ids"$'\n'"$_scanid"
+			fi
+			_found=1
+		fi
+	done
+
+	if [ "$_found" -eq 0 ]; then
+		return 1
+	fi
+
+	local _count
+	_count=$(printf '%s\n' "$_stopped_ids" | command grep -c '^.' || echo 0)
+	printf 'Stopped scans (%s):\n' "$_count"
+	printf ' %-22s %-10s %-10s %-6s %-6s %-20s %s\n' \
+		"SCANID" "STAGE" "FILES" "HITS" "WKRS" "STOPPED" "PATH"
+
+	while IFS= read -r _scanid; do
+		[ -z "$_scanid" ] && continue
+		_lifecycle_read_meta "$_scanid" || continue
+
+		local _stopped_display
+		_stopped_display=$(echo "${_meta_stopped_hr:-unknown}" | awk '{print $1,$2,$3,$4}')
+		printf ' %-22s %-10s %-10s %-6s %-6s %-20s %s\n' \
+			"$_scanid" "${_meta_stage:--}" "${_meta_total_files:--}" \
+			"${_meta_hits:-0}" "${_meta_workers:--}" \
+			"$_stopped_display" "${_meta_path:--}"
+	done <<< "$_stopped_ids"
+
+	printf '  (resume: maldet --continue SCANID)\n'
+	return 0
+}
+
+# _lifecycle_compute_eta engine elapsed prog_pos prog_total — echo ETA seconds, "null", or 0
+# clamav/clamdscan/yara → "null" (engines lack per-file progress data);
+# native with progress data → remaining seconds; otherwise "0".
+_lifecycle_compute_eta() {
+	local _engine="$1" _elapsed="$2" _pp="$3" _pt="$4"
+	case "$_engine" in
+		clamav|clamdscan|yara) printf 'null'; return 0 ;;
+	esac
+	if [ "$_pp" -gt 0 ] 2>/dev/null && [ "$_pt" -gt 0 ] 2>/dev/null && [ "$_elapsed" -gt 0 ] 2>/dev/null; then
+		printf '%d' "$(( (_elapsed * _pt / _pp) - _elapsed ))"
+	else
+		printf '0'
+	fi
+}
+
+# _lifecycle_render_json_active scanids — JSON array output (no jq dependency)
+_lifecycle_render_json_active() {
+	local _ids="$1"
+	local _scanid _state _first=1
+
+	printf '{\n  "active_scans": [\n'
+
+	while IFS= read -r _scanid; do
+		[ -z "$_scanid" ] && continue
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unreadable meta
+		_lifecycle_read_meta "$_scanid" || continue
+
+		if [ "$_first" -eq 1 ]; then
+			_first=0
+		else
+			printf ',\n'
+		fi
+
+		local _j_path _j_stages _j_sig _j_engine
+		_j_path=$(_json_escape_string "$_meta_path")
+		_j_stages=$(_json_escape_string "${_meta_stages:-}")
+		_j_sig=$(_json_escape_string "${_meta_sig_version:-}")
+		_j_engine=$(_json_escape_string "${_meta_engine:--}")
+
+		local _i_pid="${_meta_pid:-0}"
+		local _i_total="${_meta_total_files:-0}"
+		local _i_hits="${_meta_hits:-0}"
+		# Live elapsed for running scans; completed scans use recorded value
+		local _i_elapsed="${_meta_elapsed:-0}"
+		if [ "$_i_elapsed" = "0" ] && [ -n "$_meta_started" ] && [ "$_meta_started" != "0" ]; then
+			_i_elapsed="$(( $(command date +%s) - _meta_started ))"
+		fi
+		local _i_workers="${_meta_workers:-0}"
+		local _i_prog_pos="${_meta_progress_pos:-0}"
+		local _i_prog_total="${_meta_progress_total:-0}"
+
+		# Replace "-" sentinels with 0 for integer fields
+		[ "$_i_pid" = "-" ] && _i_pid=0
+		[ "$_i_total" = "-" ] && _i_total=0
+		[ "$_i_hits" = "-" ] && _i_hits=0
+		[ "$_i_elapsed" = "-" ] && _i_elapsed=0
+		[ "$_i_workers" = "-" ] && _i_workers=0
+		[ "$_i_prog_pos" = "-" ] && _i_prog_pos=0
+		[ "$_i_prog_total" = "-" ] && _i_prog_total=0
+
+		local _eta_val
+		_eta_val=$(_lifecycle_compute_eta "${_meta_engine:-}" "$_i_elapsed" "$_i_prog_pos" "$_i_prog_total")
+
+		printf '    {\n'
+		# scan_id: canonical field name (v2.0.1+); scanid retained for one release
+		# cycle for backward compat with existing consumers and removed in v2.1.0.
+		printf '      "scan_id": "%s",\n' "$_scanid"
+		printf '      "scanid": "%s",\n' "$_scanid"
+		printf '      "state": "%s",\n' "$_state"
+		printf '      "pid": %s,\n' "$_i_pid"
+		printf '      "path": "%s",\n' "$_j_path"
+		printf '      "engine": "%s",\n' "$_j_engine"
+		printf '      "total_files": %s,\n' "$_i_total"
+		printf '      "hits": %s,\n' "$_i_hits"
+		printf '      "elapsed": %s,\n' "$_i_elapsed"
+		printf '      "eta": %s,\n' "$_eta_val"
+		printf '      "workers": %s,\n' "$_i_workers"
+		printf '      "stages": "%s",\n' "$_j_stages"
+		printf '      "sig_version": "%s",\n' "$_j_sig"
+		printf '      "progress": {\n'
+		printf '        "position": %s,\n' "$_i_prog_pos"
+		printf '        "total": %s\n' "$_i_prog_total"
+		printf '      }\n'
+		printf '    }'
+	done <<< "$_ids"
+
+	printf '\n  ]\n}\n'
+
+	return 0
+}
+
+# _lifecycle_render_tsv_active scanids — TSV format with #LMD_SCANLIST:v1 header
+_lifecycle_render_tsv_active() {
+	local _ids="$1"
+	local _scanid _state
+
+	printf '#LMD_SCANLIST:v1\n'
+	printf 'scanid\tstate\tpid\tpath\tengine\ttotal_files\thits\telapsed\teta\n'
+
+	while IFS= read -r _scanid; do
+		[ -z "$_scanid" ] && continue
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unreadable meta
+		_lifecycle_read_meta "$_scanid" || continue
+
+		# Live elapsed for running scans; completed scans use recorded value
+		local _tsv_elapsed="${_meta_elapsed:-0}"
+		if [ "$_tsv_elapsed" = "0" ] && [ -n "$_meta_started" ] && [ "$_meta_started" != "0" ]; then
+			_tsv_elapsed="$(( $(command date +%s) - _meta_started ))"
+		fi
+		# ETA: -1 for engines without per-file progress (clamav, clamdscan, yara)
+		local _tsv_eta=0
+		local _tp="${_meta_progress_pos:-0}" _tt="${_meta_progress_total:-0}"
+		[ "$_tp" = "-" ] && _tp=0
+		[ "$_tt" = "-" ] && _tt=0
+		case "${_meta_engine:-}" in
+			clamav|clamdscan|yara) _tsv_eta=-1 ;;
+			*)
+				if [ "$_tp" -gt 0 ] && [ "$_tt" -gt 0 ] && [ "$_tsv_elapsed" -gt 0 ]; then
+					_tsv_eta=$(( (_tsv_elapsed * _tt / _tp) - _tsv_elapsed ))
+				fi
+				;;
+		esac
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$_scanid" "$_state" "${_meta_pid:--}" "${_meta_path:--}" \
+			"${_meta_engine:--}" "${_meta_total_files:--}" "${_meta_hits:-0}" \
+			"$_tsv_elapsed" "$_tsv_eta"
+	done <<< "$_ids"
+
+	return 0
+}
+
+# _session_index_append scanid epoch started_hr elapsed total_files total_hits total_cleaned total_quarantined path sig_version quarantine_enabled completed_hr engine hash_type — append to session.index
+# Schema v1 = fields 1-9; v1.1 added fields 10-11; v1.2 adds fields 12-14
+# (completed_hr, engine, hash_type) for parity with per-scan JSON.
+# Readers MUST tolerate missing trailing fields (old entries, pre-bump rebuilds).
+_session_index_append() {
+	local _scanid="$1" _epoch="$2" _started_hr="$3" _elapsed="$4"
+	local _total_files="$5" _total_hits="$6" _total_cleaned="$7"
+	local _total_quar="$8" _path="$9"
+	shift 9
+	local _sig_version="${1:--}" _quar_enabled="${2:-0}"
+	local _completed_hr="${3:--}" _engine="${4:--}" _hash_type="${5:--}"
+	local _index_file="$sessdir/session.index"
+
+	if [ ! -f "$_index_file" ]; then
+		printf '#LMD_INDEX:v2\n' > "$_index_file"
+	fi
+
+	# Atomic append (< PIPE_BUF)
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$_scanid" "$_epoch" "$_started_hr" "$_elapsed" \
+		"$_total_files" "$_total_hits" "$_total_cleaned" \
+		"$_total_quar" "$_path" \
+		"$_sig_version" "$_quar_enabled" \
+		"$_completed_hr" "$_engine" "$_hash_type" >> "$_index_file"
+}
+
+# _session_index_rebuild — rebuild session.index from session.tsv.* (flock-gated, atomic .tmp+mv)
+# Schema v1.2: 14 fields per row; #LMD_INDEX:v2 header.
+_session_index_rebuild() {
+	local _index_file="$sessdir/session.index"
+	local _tmp_file="$_index_file.tmp"
+	local _tsv_file _rid
+	local _r_scanid _r_started_hr _r_elapsed _r_tot_files _r_tot_hits _r_tot_cl _r_path _r_epoch
+	local _r_sig_ver _r_quar _r_end_hr _r_engine _r_hashtype
+	# Throwaway variables for TSV fields we do not use
+	local _r_fmt _r_alert_type _r_hostname _r_days _r_fl_et
+	local _r_scanner_ver _r_hostid
+
+	# Flock to prevent concurrent rebuilds
+	(
+		if command -v flock >/dev/null 2>&1; then  # flock not available on FreeBSD
+			flock -n 200 || return 0  # another rebuild running, skip
+		fi
+
+		printf '#LMD_INDEX:v2\n' > "$_tmp_file"
+
+		for _tsv_file in "$sessdir"/session.tsv.[0-9]*; do
+			[ -f "$_tsv_file" ] || continue
+			_rid="${_tsv_file##*.tsv.}"
+			IFS=$'\t' read -r _r_fmt _r_alert_type _r_scanid _r_hostname _r_path _r_days \
+				_r_started_hr _r_end_hr _r_elapsed _r_fl_et \
+				_r_tot_files _r_tot_hits _r_tot_cl \
+				_r_scanner_ver _r_sig_ver _r_hashtype _r_engine _r_quar _r_hostid \
+				< "$_tsv_file"
+			[ -z "$_r_scanid" ] && continue
+			# Compute epoch from started_hr; fall back to file mtime
+			_r_epoch=$(command date -d "$_r_started_hr" "+%s" 2>/dev/null) || _r_epoch=0  # safe: date parse failure falls back to 0
+			# Count quarantined hits: lines where field 3 (quarpath) is non-empty and not "-"
+			local _r_tot_quar
+			_r_tot_quar=$(awk -F'\t' '!/^#/ && $3 != "" && $3 != "-" { n++ } END { print n+0 }' "$_tsv_file")
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$_r_scanid" "$_r_epoch" "$_r_started_hr" "${_r_elapsed:--}" \
+				"${_r_tot_files:--}" "${_r_tot_hits:--}" "${_r_tot_cl:--}" \
+				"$_r_tot_quar" "${_r_path:--}" \
+				"${_r_sig_ver:--}" "${_r_quar:-0}" \
+				"${_r_end_hr:--}" "${_r_engine:--}" "${_r_hashtype:--}" \
+				>> "$_tmp_file"
+		done
+
+		command mv -f "$_tmp_file" "$_index_file"
+	) 200>"$_index_file.lock"
+}
+
+# _lifecycle_check_parent ppid — returns 0 if parent alive, 1 if dead (kill -0, works on FreeBSD)
+_lifecycle_check_parent() {
+	local ppid="$1"
+	if kill -0 "$ppid" 2>/dev/null; then  # EPERM on other-user pid is still alive
+		return 0
+	fi
+	return 1
+}
+
+# _lifecycle_kill scanid — kill a running/paused scan (sentinel + SIGTERM, 30s SIGKILL fallback)
+# ClamAV daemon (clamdscan): abort sentinel only, no SIGSTOP/SIGCONT (E16)
+_lifecycle_kill() {
+	local _scanid="$1"
+	local _state _is_paused=0
+
+	_lifecycle_read_meta "$_scanid" || {
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	# Detect live state (handles stale detection)
+	_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || {  # safe: detect_state only fails on missing meta
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	case "$_state" in
+		completed)
+			echo "maldet($$): {lifecycle} scan $_scanid already completed" >&2
+			return 1
+			;;
+		killed)
+			echo "maldet($$): {lifecycle} scan $_scanid already killed" >&2
+			return 1
+			;;
+	esac
+
+	if [ "$_state" = "paused" ]; then
+		_is_paused=1
+	fi
+
+	# Write abort sentinel (E2: ENOSPC fallback below)
+	if ! printf 'abort\n' > "$tmpdir/.abort.$_scanid" 2>/dev/null; then  # safe: suppress ENOSPC/EACCES — fallback below
+		# ENOSPC — sentinel write failed, fall through to direct SIGTERM
+		eout "{lifecycle} warning: could not write abort sentinel (disk full?), sending direct SIGTERM" 1
+	fi
+
+	local _pid="$_meta_pid"
+
+	# If process is still alive, send signals
+	if kill -0 "$_pid" 2>/dev/null; then  # safe: returns false if PID dead
+		# If paused: SIGCONT first to un-pause (E15), then SIGTERM
+		# Skip SIGCONT for daemon ClamAV — sentinel-only approach (E16)
+		if [ "$_is_paused" -eq 1 ] && [ "$_meta_engine" != "clamdscan" ]; then
+			kill -CONT "$_pid" 2>/dev/null  # safe: process may have exited between check and signal
+		fi
+
+		kill -TERM "$_pid" 2>/dev/null  # safe: process may have exited
+
+		# Wait up to 30s for PID to exit
+		local _waited=0
+		while [ "$_waited" -lt 30 ]; do
+			if ! kill -0 "$_pid" 2>/dev/null; then  # safe: checking liveness
+				break
+			fi
+			command sleep 1
+			_waited=$((_waited + 1))
+		done
+
+		# SIGKILL fallback if still alive
+		if kill -0 "$_pid" 2>/dev/null; then  # safe: checking liveness
+			kill -KILL "$_pid" 2>/dev/null  # safe: last resort
+			# Brief wait for SIGKILL to take effect
+			command sleep 1
+		fi
+	fi
+
+	# Clean scan-scoped temp files: runtime sigs, sentinels
+	command rm -f "$tmpdir"/.runtime.*."$_scanid".* \
+		"$tmpdir/.abort.$_scanid" \
+		"$tmpdir/.pause.$_scanid" \
+		2>/dev/null  # safe: files may not exist
+
+	_lifecycle_update_meta "$_scanid" "state" "killed"
+
+	eout "{lifecycle} scan $_scanid killed" 1
+	# Native engine workers check the abort sentinel at chunk boundaries;
+	# they may take several seconds to exit after the parent is signaled.
+	if [ "${_meta_engine:-}" = "native" ] && [ "${_meta_workers:-1}" != "1" ]; then
+		eout "{lifecycle} note: native engine workers may take up to 10s to exit cleanly" 1
+	fi
+
+	return 0
+}
+
+# _lifecycle_orphan_sweep — mark stale scans (PID dead, state=running) and clean orphaned temps
+_lifecycle_orphan_sweep() {
+	local _meta_file _scanid _state
+
+	for _meta_file in "$sessdir"/scan.meta.*; do
+		[ -f "$_meta_file" ] || continue
+		_scanid="${_meta_file##*scan.meta.}"
+		case "$_scanid" in
+			*.tmp) continue ;;
+		esac
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unparseable metas
+		if [ "$_state" = "stale" ]; then
+			# Read meta in caller scope to populate _meta_pid for log message
+			_lifecycle_read_meta "$_scanid" || continue
+			_lifecycle_update_meta "$_scanid" "state" "stale"
+			eout "{lifecycle} orphan sweep: scan $_scanid marked stale (process $_meta_pid dead)" 1
+			# Clean orphaned PID-scoped and scanid-scoped temp files
+			# ns_pid is the temp-file namespace PID ($$ at scan time);
+			# falls back to pid for metas written before ns_pid existed.
+			local _stale_pid="${_meta_ns_pid:-$_meta_pid}"
+			command rm -f \
+				"$tmpdir"/.hcb."$_stale_pid".* \
+				"$tmpdir"/.hex_worker."$_stale_pid".* "$tmpdir"/.hex_chunk."$_stale_pid".* \
+				"$tmpdir"/.md5_worker."$_stale_pid".* "$tmpdir"/.md5_chunk."$_stale_pid".* \
+				"$tmpdir"/.sha256_worker."$_stale_pid".* "$tmpdir"/.sha256_chunk."$_stale_pid".* \
+				"$tmpdir"/.runtime.*."$_scanid".* \
+				2>/dev/null  # safe: files may not exist
+			command rm -f \
+				"$tmpdir/.abort.$_scanid" "$tmpdir/.pause.$_scanid" \
+				"$tmpdir/.clamscan_pid.$_scanid" "$tmpdir/.yara_pid.$_scanid" \
+				2>/dev/null  # safe: sentinels may not exist
+			command rm -rf \
+				"$tmpdir"/.md5_progress."$_stale_pid".* \
+				"$tmpdir"/.sha256_progress."$_stale_pid".* \
+				"$tmpdir"/.hex_progress."$_stale_pid".* \
+				2>/dev/null  # safe: dirs may not exist
+		fi
+	done
+
+	return 0
+}
+
+# _lifecycle_duplicate_guard path — reject if path already scanned by a running/paused scan
+_lifecycle_duplicate_guard() {
+	local _check_path="$1"
+	local _meta_file _scanid _state
+
+	for _meta_file in "$sessdir"/scan.meta.*; do
+		[ -f "$_meta_file" ] || continue
+		_scanid="${_meta_file##*scan.meta.}"
+		case "$_scanid" in
+			*.tmp) continue ;;
+		esac
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unparseable metas
+		case "$_state" in
+			running|paused)
+				_lifecycle_read_meta "$_scanid" || continue
+				if [ "$_meta_path" = "$_check_path" ]; then
+					echo "maldet($$): {lifecycle} duplicate scan rejected: $_check_path already being scanned by $_scanid" >&2
+					return 1
+				fi
+				;;
+		esac
+	done
+
+	return 0
+}
+
+# _lifecycle_cleanup_stale_metas — remove terminal meta files older than $scan_meta_cleanup_age hours
+_lifecycle_cleanup_stale_metas() {
+	local _age_hours="${scan_meta_cleanup_age:-24}"
+	local _age_minutes _meta_file _scanid _state
+
+	# Disabled when age=0
+	[ "$_age_hours" = "0" ] && return 0
+
+	_age_minutes=$((_age_hours * 60))
+
+	for _meta_file in "$sessdir"/scan.meta.*; do
+		[ -f "$_meta_file" ] || continue
+		_scanid="${_meta_file##*scan.meta.}"
+		case "$_scanid" in
+			*.tmp) continue ;;
+		esac
+		_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || continue  # safe: skip unparseable metas
+		case "$_state" in
+			completed|killed|stale)
+				if [ -n "$($find "$_meta_file" -maxdepth 0 -mmin +"$_age_minutes" 2>/dev/null)" ]; then  # safe: find may warn on race-deleted files
+					command rm -f "$_meta_file"
+					eout "{lifecycle} cleanup: removed stale meta for scan $_scanid" 1
+				fi
+				;;
+		esac
+	done
+
+	return 0
+}
+
+# _rotate_history filepath threshold_bytes — cascade-rotate if file exceeds threshold (inode-preserving)
+_rotate_history() {
+	local _filepath="$1" _threshold="$2"
+	local _filesize
+
+	# Skip if file does not exist
+	[ -f "$_filepath" ] || return 0
+
+	# Check size — skip if below threshold
+	_filesize=$(command wc -c < "$_filepath")
+	[ "$_filesize" -le "$_threshold" ] && return 0
+
+	# Cascade existing rotations: .2.gz → .3.gz
+	if [ -f "$_filepath.2.gz" ]; then
+		command mv -f "$_filepath.2.gz" "$_filepath.3.gz"
+	fi
+
+	# .1.gz → .2.gz
+	if [ -f "$_filepath.1.gz" ]; then
+		command mv -f "$_filepath.1.gz" "$_filepath.2.gz"
+	fi
+
+	# Gzip active → .1.gz (write to .tmp first for atomicity)
+	command gzip -c "$_filepath" > "$_filepath.1.gz.tmp"
+	command mv -f "$_filepath.1.gz.tmp" "$_filepath.1.gz"
+
+	# Truncate active file — preserves inode
+	:> "$_filepath"
+
+	return 0
+}
+
+# _rotate_histories — rotate history files at 1MB threshold; adjusts tlog cursor for inotify_log
+_rotate_histories() {
+	local _threshold=1048576
+	local _file _rotated=0
+	local _pre_size _post_size _delta
+
+	# List of history files to rotate
+	local _hist_files
+	_hist_files="$quardir/hits.hist
+$quardir/quarantine.hist
+$quardir/monitor.scanned.hist
+$inotify_log"
+
+	while IFS= read -r _file; do
+		[ -z "$_file" ] && continue
+		[ -f "$_file" ] || continue
+
+		# Capture pre-rotation size for cursor adjustment
+		_pre_size=$(command wc -c < "$_file")
+
+		_rotate_history "$_file" "$_threshold"
+
+		# If file was rotated (now empty/smaller), adjust tlog cursor
+		_post_size=$(command wc -c < "$_file")
+		if [ "$_post_size" -lt "$_pre_size" ]; then
+			_delta=$((_pre_size - _post_size))
+			# Only inotify_log has a tlog cursor — use "inotify" name
+			if [ "$_file" = "$inotify_log" ]; then
+				tlog_adjust_cursor "inotify" "$tmpdir" "$_delta"
+			fi
+			_rotated=$((_rotated + 1))
+			eout "{lifecycle} rotated history: $_file (${_pre_size} bytes)" 1
+		fi
+	done <<< "$_hist_files"
+
+	if [ "$_rotated" -gt 0 ]; then
+		eout "{lifecycle} rotated $_rotated history file(s)" 1
+	fi
+
+	return 0
+}
+
+# _session_compress scanid — gzip session.tsv.$scanid (atomic .tmp+mv); returns 1 if missing
+_session_compress() {
+	local _scanid="$1"
+	local _tsv_file="$sessdir/session.tsv.$_scanid"
+
+	# Already compressed — nothing to do
+	if [ -f "$_tsv_file.gz" ] && [ ! -f "$_tsv_file" ]; then
+		return 0
+	fi
+
+	# No session file at all
+	[ -f "$_tsv_file" ] || return 1
+
+	# Compress: write to .tmp for atomicity
+	command gzip -c "$_tsv_file" > "$_tsv_file.gz.tmp"
+	command mv -f "$_tsv_file.gz.tmp" "$_tsv_file.gz"
+	command rm -f "$_tsv_file"
+}
+
+# _lifecycle_pause scanid duration — pause a running scan (sentinel + SIGSTOP)
+# ClamAV daemon (clamdscan) cannot be paused — use --kill (E16)
+_lifecycle_pause() {
+	local _scanid="$1"
+	local _duration_arg="${2:-}"
+	local _state _duration_secs=0 _epoch _dur_msg=""
+
+	_lifecycle_read_meta "$_scanid" || {
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	# Detect live state
+	_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || {  # safe: detect_state only fails on missing meta
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	case "$_state" in
+		completed|killed|stopped)
+			echo "maldet($$): {lifecycle} cannot pause scan $_scanid (state: $_state)" >&2
+			return 1
+			;;
+		paused)
+			echo "maldet($$): {lifecycle} scan $_scanid already paused" >&2
+			return 1
+			;;
+		stale)
+			echo "maldet($$): {lifecycle} cannot pause scan $_scanid (state: stale — process dead)" >&2
+			return 1
+			;;
+	esac
+
+	# Daemon gate (E16): clamdscan cannot be paused
+	if [ "$_meta_engine" = "clamdscan" ]; then
+		echo "maldet($$): {lifecycle} cannot pause daemon ClamAV scans (clamdscan) — use --kill to abort" >&2
+		return 1
+	fi
+
+	if [ -n "$_duration_arg" ]; then
+		local _num _suffix
+		_suffix="${_duration_arg: -1}"
+		case "$_suffix" in
+			s)
+				_num="${_duration_arg%s}"
+				;;
+			m)
+				_num="${_duration_arg%m}"
+				;;
+			h)
+				_num="${_duration_arg%h}"
+				;;
+			[0-9])
+				# Bare numeric — treat as seconds
+				_num="$_duration_arg"
+				_suffix="s"
+				;;
+			*)
+				echo "maldet($$): {lifecycle} invalid duration format: $_duration_arg (use Ns, Nm, Nh, or bare seconds)" >&2
+				return 1
+				;;
+		esac
+
+		if ! [[ "$_num" =~ ^[0-9]+$ ]] || [ -z "$_num" ]; then
+			echo "maldet($$): {lifecycle} invalid duration format: $_duration_arg (numeric part required)" >&2
+			return 1
+		fi
+
+		case "$_suffix" in
+			s) _duration_secs="$_num" ;;
+			m) _duration_secs=$((_num * 60)) ;;
+			h) _duration_secs=$((_num * 3600)) ;;
+		esac
+	fi
+
+	_epoch=$(command date +%s)
+	printf 'epoch=%s\nduration=%s\n' "$_epoch" "$_duration_secs" > "$tmpdir/.pause.$_scanid"
+
+	# SIGSTOP external processes if PID files exist
+	local _ext_pid
+	if [ -f "$tmpdir/.clamscan_pid.$_scanid" ]; then
+		IFS= read -r _ext_pid < "$tmpdir/.clamscan_pid.$_scanid"
+		if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+			kill -STOP "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+		fi
+	fi
+	if [ -f "$tmpdir/.yara_pid.$_scanid" ]; then
+		IFS= read -r _ext_pid < "$tmpdir/.yara_pid.$_scanid"
+		if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+			kill -STOP "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+		fi
+	fi
+
+	_lifecycle_update_meta "$_scanid" "state" "paused"
+	if [ "$_duration_secs" -gt 0 ]; then
+		_dur_msg=" for ${_duration_arg}"
+	fi
+
+	eout "{lifecycle} scan $_scanid paused${_dur_msg}" 1
+
+	return 0
+}
+
+# _session_resolve_compressed scanid — resolve compressed session path (per-session .gz or monthly archive)
+_session_resolve_compressed() {
+	local _scanid="$1"
+
+	# Per-session .gz takes priority
+	if [ -f "$sessdir/session.tsv.$_scanid.gz" ]; then
+		echo "$sessdir/session.tsv.$_scanid.gz"
+		return 0
+	fi
+
+	# Check monthly archive: extract YYMM from scanid (format YYMMDD-HHMM.PID)
+	local _yymm
+	_yymm="${_scanid:0:4}"
+	if [ -f "$sessdir/session.archive.$_yymm.tsv.gz" ]; then
+		echo "$sessdir/session.archive.$_yymm.tsv.gz"
+		return 0
+	fi
+
+	return 1
+}
+
+# _lifecycle_unpause scanid — unpause a paused scan (SIGCONT + remove sentinel)
+_lifecycle_unpause() {
+	local _scanid="$1"
+	local _state
+
+	_lifecycle_read_meta "$_scanid" || {
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	# Detect live state
+	_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || {  # safe: detect_state only fails on missing meta
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	if [ "$_state" != "paused" ]; then
+		echo "maldet($$): {lifecycle} scan $_scanid not paused (state: $_state)" >&2
+		return 1
+	fi
+
+	# SIGCONT external processes if PID files exist
+	local _ext_pid
+	if [ -f "$tmpdir/.clamscan_pid.$_scanid" ]; then
+		IFS= read -r _ext_pid < "$tmpdir/.clamscan_pid.$_scanid"
+		if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+			kill -CONT "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+		fi
+	fi
+	if [ -f "$tmpdir/.yara_pid.$_scanid" ]; then
+		IFS= read -r _ext_pid < "$tmpdir/.yara_pid.$_scanid"
+		if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+			kill -CONT "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+		fi
+	fi
+
+	command rm -f "$tmpdir/.pause.$_scanid"
+
+	_lifecycle_update_meta "$_scanid" "state" "running"
+
+	eout "{lifecycle} scan $_scanid unpaused" 1
+
+	return 0
+}
+
+# _session_archive_month YYMM — concatenate session.tsv.$YYMM* into monthly .gz archive
+_session_archive_month() {
+	local _yymm="$1"
+	local _tmp_concat _tmp_gz _final_archive
+	local _file _count=0
+
+	_final_archive="$sessdir/session.archive.$_yymm.tsv.gz"
+
+	# Collect matching files — both plain and .gz
+	# Use a temp file to accumulate content (avoids memory issues on large sets)
+	_tmp_concat=$(command mktemp "$tmpdir/.archive_concat.XXXXXX")
+
+	# Pass 1: plain TSV session files matching YYMM prefix
+	for _file in "$sessdir"/session.tsv."$_yymm"*; do
+		[ -f "$_file" ] || continue
+		# Skip .gz files (handled in pass 2)
+		case "$_file" in *.gz) continue ;; esac
+		# Skip monthly archive files themselves
+		case "$_file" in *session.archive.*) continue ;; esac
+		command cat "$_file" >> "$_tmp_concat"
+		_count=$((_count + 1))
+	done
+
+	# Pass 2: compressed .gz session files matching YYMM prefix
+	for _file in "$sessdir"/session.tsv."$_yymm"*.gz; do
+		[ -f "$_file" ] || continue
+		# Skip monthly archive files themselves
+		case "$_file" in *session.archive.*) continue ;; esac
+		command gzip -dc "$_file" >> "$_tmp_concat"
+		_count=$((_count + 1))
+	done
+
+	# Nothing to archive
+	if [ "$_count" -eq 0 ]; then
+		command rm -f "$_tmp_concat"
+		return 0
+	fi
+
+	# Gzip concatenated content to temp, then atomic move
+	_tmp_gz="$_final_archive.tmp"
+	command gzip -c "$_tmp_concat" > "$_tmp_gz"
+	command mv -f "$_tmp_gz" "$_final_archive"
+	command rm -f "$_tmp_concat"
+
+	# Remove originals only after successful archive creation
+	for _file in "$sessdir"/session.tsv."$_yymm"*; do
+		[ -f "$_file" ] || continue
+		# Do not remove the archive we just created
+		case "$_file" in *session.archive.*) continue ;; esac
+		command rm -f "$_file"
+	done
+
+	eout "{lifecycle} archived $_count sessions for month $_yymm" 1
+
+	return 0
+}
+
+# _lifecycle_stop scanid — stop scan with stage-granularity checkpoint (session.hits preserved for --continue)
+# ClamAV daemon (clamdscan) cannot be checkpointed — use --kill
+_lifecycle_stop() {
+	local _scanid="$1"
+	local _state _is_paused=0
+
+	_lifecycle_read_meta "$_scanid" || {
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	# Detect live state (handles stale detection)
+	_state=$(_lifecycle_detect_state "$_scanid" 2>/dev/null) || {  # safe: detect_state only fails on missing meta
+		echo "maldet($$): {lifecycle} scan $_scanid not found" >&2
+		return 1
+	}
+
+	case "$_state" in
+		completed|killed)
+			echo "maldet($$): {lifecycle} scan $_scanid not running (state: $_state)" >&2
+			return 1
+			;;
+		stopped)
+			echo "maldet($$): {lifecycle} scan $_scanid already stopped" >&2
+			return 1
+			;;
+		stale)
+			# Stale = PID dead but not terminal — treat as stoppable (just write checkpoint)
+			;;
+	esac
+
+	if [ "$_state" = "paused" ]; then
+		_is_paused=1
+	fi
+
+	# Daemon gate: clamdscan cannot be checkpointed (no stage granularity)
+	if [ "$_meta_engine" = "clamdscan" ]; then
+		echo "maldet($$): {lifecycle} cannot checkpoint daemon ClamAV scans (clamdscan) — use --kill to abort" >&2
+		return 1
+	fi
+
+	# Write abort sentinel (E2: workers check at stage boundaries)
+	if ! printf 'stop\n' > "$tmpdir/.abort.$_scanid" 2>/dev/null; then  # safe: suppress ENOSPC/EACCES — fallback below
+		eout "{lifecycle} warning: could not write abort sentinel (disk full?), sending direct SIGTERM" 1
+	fi
+
+	local _pid="$_meta_pid"
+
+	# If process is still alive, send signals
+	if kill -0 "$_pid" 2>/dev/null; then  # safe: returns false if PID dead
+		# If paused: SIGCONT first to un-freeze (E15), then SIGTERM
+		if [ "$_is_paused" -eq 1 ]; then
+			kill -CONT "$_pid" 2>/dev/null  # safe: process may have exited between check and signal
+			# Also SIGCONT external processes
+			local _ext_pid
+			if [ -f "$tmpdir/.clamscan_pid.$_scanid" ]; then
+				IFS= read -r _ext_pid < "$tmpdir/.clamscan_pid.$_scanid"
+				if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+					kill -CONT "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+				fi
+			fi
+			if [ -f "$tmpdir/.yara_pid.$_scanid" ]; then
+				IFS= read -r _ext_pid < "$tmpdir/.yara_pid.$_scanid"
+				if [ -n "$_ext_pid" ] && kill -0 "$_ext_pid" 2>/dev/null; then  # safe: PID may have exited
+					kill -CONT "$_ext_pid" 2>/dev/null  # safe: race between check and signal
+				fi
+			fi
+		fi
+
+		kill -TERM "$_pid" 2>/dev/null  # safe: process may have exited
+
+		# Wait up to 30s for PID to exit
+		local _waited=0
+		while [ "$_waited" -lt 30 ]; do
+			if ! kill -0 "$_pid" 2>/dev/null; then  # safe: checking liveness
+				break
+			fi
+			command sleep 1
+			_waited=$((_waited + 1))
+		done
+
+		# SIGKILL fallback if still alive
+		if kill -0 "$_pid" 2>/dev/null; then  # safe: checking liveness
+			kill -KILL "$_pid" 2>/dev/null  # safe: last resort
+			command sleep 1
+		fi
+	fi
+
+	# Read current stage and hits from meta (may have been updated during scan)
+	_lifecycle_read_meta "$_scanid" || true  # safe: re-read for latest stage/hits values
+
+	local _ckpt_stage="${_meta_stage:-unknown}"
+	local _ckpt_hits="${_meta_hits:-0}"
+	[ "$_ckpt_hits" = "-" ] && _ckpt_hits=0
+	local _ckpt_workers="${_meta_workers:-1}"
+	local _ckpt_total="${_meta_total_files:-0}"
+	local _ckpt_options="${_meta_options:-}"
+
+	local _ckpt_sig_ver
+	if [ -f "$sigdir/maldet.sigs.ver" ]; then
+		IFS= read -r _ckpt_sig_ver < "$sigdir/maldet.sigs.ver"
+	else
+		_ckpt_sig_ver="unknown"
+	fi
+	[ -z "$_ckpt_sig_ver" ] && _ckpt_sig_ver="unknown"
+
+	# Timestamps
+	local _stopped _stopped_hr
+	_stopped=$(command date +%s)
+	_stopped_hr=$(command date "+%b %d %Y %H:%M:%S %z")
+
+	# Write checkpoint atomically (.tmp -> mv)
+	local _ckpt_file="$sessdir/scan.checkpoint.$_scanid"
+	local _ckpt_tmp="$_ckpt_file.tmp"
+
+	command cat > "$_ckpt_tmp" <<EOF
+#LMD_CHECKPOINT:v1
+scanid=$_scanid
+stopped=$_stopped
+stopped_hr=$_stopped_hr
+stage=$_ckpt_stage
+sig_version=$_ckpt_sig_ver
+workers=$_ckpt_workers
+total_files=$_ckpt_total
+hits_so_far=$_ckpt_hits
+options=$_ckpt_options
+EOF
+
+	command mv -f "$_ckpt_tmp" "$_ckpt_file"
+
+	_lifecycle_update_meta "$_scanid" "state" "stopped"
+	_lifecycle_update_meta "$_scanid" "stopped" "$_stopped"
+	_lifecycle_update_meta "$_scanid" "stopped_hr" "$_stopped_hr"
+
+	# Clean sentinels but NOT session data (session.hits preserved for continue)
+	command rm -f "$tmpdir/.abort.$_scanid" \
+		"$tmpdir/.pause.$_scanid" \
+		2>/dev/null  # safe: files may not exist
+
+	eout "{lifecycle} scan $_scanid stopped at stage $_ckpt_stage" 1
+
+	return 0
+}
+
+# _lifecycle_continue scanid — resume a stopped scan from #LMD_CHECKPOINT:v1 (validates header, warns on sig drift)
+_lifecycle_continue() {
+	local _scanid="$1"
+	local _ckpt_file="$sessdir/scan.checkpoint.$_scanid"
+
+	if [ ! -f "$_ckpt_file" ]; then
+		echo "maldet($$): {lifecycle} checkpoint not found for scan $_scanid" >&2
+		return 1
+	fi
+
+	local _header
+	IFS= read -r _header < "$_ckpt_file"
+	if [ "$_header" != "#LMD_CHECKPOINT:v1" ]; then
+		echo "maldet($$): {lifecycle} corrupt checkpoint for scan $_scanid (invalid header)" >&2
+		return 1
+	fi
+
+	# Check if scan is currently paused (user should use --unpause instead)
+	if [ -f "$tmpdir/.pause.$_scanid" ]; then
+		# Also check meta state
+		if _lifecycle_read_meta "$_scanid" 2>/dev/null; then  # safe: meta may not exist for old scans
+			if [ "$_meta_state" = "paused" ]; then
+				echo "maldet($$): {lifecycle} scan $_scanid is paused — use --unpause to resume" >&2
+				return 1
+			fi
+		fi
+		# Sentinel exists but meta not paused — stale sentinel, clean it
+		command rm -f "$tmpdir/.pause.$_scanid"
+	fi
+
+	local _key _value
+	local _ckpt_scanid="" _ckpt_stopped="" _ckpt_stopped_hr=""
+	local _ckpt_stage="" _ckpt_sig_version="" _ckpt_workers=""
+	local _ckpt_total_files="" _ckpt_hits_so_far="" _ckpt_options=""
+
+	while IFS='=' read -r _key _value; do
+		case "$_key" in
+			"#"*|"") continue ;;
+		esac
+		case "$_key" in
+			scanid)       _ckpt_scanid="$_value" ;;
+			stopped)      _ckpt_stopped="$_value" ;;
+			stopped_hr)   _ckpt_stopped_hr="$_value" ;;
+			stage)        _ckpt_stage="$_value" ;;
+			sig_version)  _ckpt_sig_version="$_value" ;;
+			workers)      _ckpt_workers="$_value" ;;
+			total_files)  _ckpt_total_files="$_value" ;;
+			hits_so_far)  _ckpt_hits_so_far="$_value" ;;
+			options)      _ckpt_options="$_value" ;;
+		esac
+	done < "$_ckpt_file"
+
+	# Compare sig version with current on-disk version
+	local _cur_sig_ver
+	if [ -f "$sigdir/maldet.sigs.ver" ]; then
+		IFS= read -r _cur_sig_ver < "$sigdir/maldet.sigs.ver"
+	else
+		_cur_sig_ver="unknown"
+	fi
+	[ -z "$_cur_sig_ver" ] && _cur_sig_ver="unknown"
+
+	if [ "$_ckpt_sig_version" != "$_cur_sig_ver" ] && \
+	   [ "$_ckpt_sig_version" != "unknown" ] && [ "$_cur_sig_ver" != "unknown" ]; then
+		eout "{lifecycle} warning: signature version changed since checkpoint (was: $_ckpt_sig_version, now: $_cur_sig_ver)" 1
+	fi
+
+	# Apply checkpoint options as config overrides (gated by -co allowlist)
+	if [ -n "$_ckpt_options" ]; then
+		local _opt _co_allowed_pat
+		_build_co_allowed_pattern _co_allowed_pat
+		local _saved_ifs="$IFS"
+		IFS=','
+		for _opt in $_ckpt_options; do
+			IFS="$_saved_ifs"
+			# Each _opt is "key=value" — apply to shell environment
+			local _opt_key="${_opt%%=*}"
+			local _opt_val="${_opt#*=}"
+			# Validate key against -co allowlist (rejects PATH, IFS, LD_PRELOAD, etc.)
+			if [ -n "$_opt_key" ] && [[ "$_opt_key" =~ $_co_allowed_pat ]]; then
+				printf -v "$_opt_key" '%s' "$_opt_val"
+			else
+				eout "{lifecycle} warning: rejected unknown checkpoint option: $_opt_key" 1
+			fi
+		done
+		IFS="$_saved_ifs"
+	fi
+
+	eout "{lifecycle} resuming scan $_ckpt_scanid from stage $_ckpt_stage (checkpoint: ${_ckpt_stopped_hr:-unknown})" 1
+	if [ -n "$_ckpt_hits_so_far" ] && [ "$_ckpt_hits_so_far" != "0" ]; then
+		eout "{lifecycle} prior hits: $_ckpt_hits_so_far" 1
+	fi
+
+	# Export checkpoint data for scan orchestration to consume
+	# shellcheck disable=SC2034
+	_continue_scanid="$_ckpt_scanid"
+	# shellcheck disable=SC2034
+	_continue_stage="$_ckpt_stage"
+	# shellcheck disable=SC2034
+	_continue_workers="$_ckpt_workers"
+	# shellcheck disable=SC2034
+	_continue_total_files="$_ckpt_total_files"
+	# shellcheck disable=SC2034
+	_continue_hits_so_far="$_ckpt_hits_so_far"
+	# shellcheck disable=SC2034
+	_continue_options="$_ckpt_options"
+
+	# Read per-worker chunk checkpoints (Phase 14)
+	# Only meaningful when checkpoint stage is "hex" (HEX workers write per-worker .wp files)
+	# shellcheck disable=SC2034
+	_continue_chunk_skips=""
+	if [ "$_ckpt_stage" = "hex" ]; then
+		local _wp_count=0 _wp_file _wp_header _wp_valid=1
+		local _wp_chunks_list=""
+
+		# Count and validate per-worker checkpoint files
+		for _wp_file in "$sessdir"/scan.wp."$_ckpt_scanid".*; do
+			[ -f "$_wp_file" ] || continue
+			# Validate #LMD_WP:v1 header
+			IFS= read -r _wp_header < "$_wp_file"
+			if [ "$_wp_header" != "#LMD_WP:v1" ]; then
+				_wp_valid=0
+				break
+			fi
+			local _wp_chunks=0 _wp_key _wp_val
+			while IFS='=' read -r _wp_key _wp_val; do
+				case "$_wp_key" in
+					"#"*|"") continue ;;
+					chunks_completed) _wp_chunks="$_wp_val" ;;
+				esac
+			done < "$_wp_file"
+			if [ -z "$_wp_chunks_list" ]; then
+				_wp_chunks_list="$_wp_chunks"
+			else
+				_wp_chunks_list="$_wp_chunks_list $_wp_chunks"
+			fi
+			_wp_count=$((_wp_count + 1))
+		done
+
+		if [ "$_wp_count" -gt 0 ]; then
+			if [ "$_wp_valid" -eq 0 ] || [ "$_wp_count" != "$_ckpt_workers" ]; then
+				# Worker count mismatch or invalid wp file: fall back to stage-granularity
+				eout "{lifecycle} warning: worker count mismatch (checkpoint: $_ckpt_workers, found: $_wp_count wp files) — falling back to stage-granularity resume" 1
+				# shellcheck disable=SC2034
+				_continue_chunk_skips=""
+			else
+				# All workers matched — export chunk-skip counts
+				# shellcheck disable=SC2034
+				_continue_chunk_skips="$_wp_chunks_list"
+			fi
+		fi
+	fi
+
+	return 0
+}

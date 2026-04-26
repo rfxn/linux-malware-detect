@@ -1,0 +1,436 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Initialization, prerun, and lifecycle functions
+
+# Source guard
+[[ -n "${_LMD_INIT_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_INIT_LOADED=1
+
+_detect_sha_capability() {
+	# Detect CPU SHA hardware acceleration capability.
+	# Returns via stdout: "hardware", "software", or "none".
+	# "hardware" = SHA-256 within ~1.3x of MD5 (safe as primary hash)
+	# "software" = SHA-256 available but ~2.5-3x slower than MD5
+	# "none"     = sha256sum binary not found
+	if [ -z "$sha256sum" ]; then
+		echo "none"
+		return
+	fi
+	if [ -f /proc/cpuinfo ]; then
+		# x86_64: Intel SHA-NI (Goldmont+ 2016, Ice Lake+ 2019, all Zen 2017+)
+		if grep -qw 'sha_ni' /proc/cpuinfo 2>/dev/null; then
+			echo "hardware"
+			return
+		fi
+		# ARM64: SHA2 crypto extension (ARMv8-A with crypto, Cortex-A57+)
+		if grep -qw 'sha2' /proc/cpuinfo 2>/dev/null; then
+			echo "hardware"
+			return
+		fi
+	fi
+	# FreeBSD: no reliable unprivileged sysctl for SHA-NI detection;
+	# dmesg ring buffer may have rotated. Default to software.
+	echo "software"
+}
+
+_resolve_hashtype() {
+	# Resolve _effective_hashtype from scan_hashtype config and _sha_capability.
+	# Called after -co overrides are applied (in scan()) and on monitor config reload.
+	case "$scan_hashtype" in
+		auto)
+			if [ "$_sha_capability" == "hardware" ]; then
+				_effective_hashtype="sha256"
+			else
+				_effective_hashtype="md5"
+			fi
+			;;
+		sha256)
+			if [ "$_sha_capability" == "none" ]; then
+				eout "{scan} WARNING: scan_hashtype=sha256 but sha256sum not found, falling back to md5" 1
+				_effective_hashtype="md5"
+			else
+				if [ "$_sha_capability" == "software" ]; then
+					eout "{scan} NOTICE: scan_hashtype=sha256 without hardware SHA-NI — software SHA-256 is ~30% slower than MD5; consider scan_hashtype=auto" 1
+				fi
+				_effective_hashtype="sha256"
+			fi
+			;;
+		both)
+			if [ "$_sha_capability" == "none" ]; then
+				eout "{scan} WARNING: scan_hashtype=both but sha256sum not found, falling back to md5" 1
+				_effective_hashtype="md5"
+			else
+				if [ "$_sha_capability" == "software" ]; then
+					eout "{scan} NOTICE: scan_hashtype=both without hardware SHA-NI — SHA-256 pass will use slower software hashing" 1
+				fi
+				_effective_hashtype="both"
+			fi
+			;;
+		*)
+			_effective_hashtype="md5"
+			;;
+	esac
+}
+
+_resolve_clamscan() {
+	# Normalize scan_clamscan from auto/0/1 to 0 or 1.
+	# $clamscan is NOT set by internals.conf — it is populated later
+	# by clamselector()/clamscan_fallback(). We must discover it here.
+	case "$scan_clamscan" in
+		auto)
+			if [ -f "/usr/local/cpanel/3rdparty/bin/clamscan" ] || [ -n "$(command -v clamscan 2>/dev/null)" ]; then
+				scan_clamscan="1"
+			else
+				scan_clamscan="0"
+			fi
+			;;
+		1) ;;
+		0) ;;
+		*)
+			eout "{scan} WARNING: invalid scan_clamscan value '$scan_clamscan', disabling" 1
+			scan_clamscan="0"
+			;;
+	esac
+	_effective_clamscan="$scan_clamscan"
+}
+
+_resolve_yara() {
+	# Normalize scan_yara from auto/0/1 to 0 or 1.
+	# Prevents duplicate YARA evaluation — ClamAV already processes YARA rules.
+	case "$scan_yara" in
+		auto)
+			if [ "$scan_clamscan" == "0" ] && { [ -n "$yara" ] || [ -n "$yr" ]; }; then
+				scan_yara="1"
+			else
+				scan_yara="0"
+			fi
+			;;
+		1) ;;
+		0) ;;
+		*)
+			eout "{scan} WARNING: invalid scan_yara value '$scan_yara', disabling" 1
+			scan_yara="0"
+			;;
+	esac
+	_effective_yara="$scan_yara"
+}
+
+prerun() {
+
+	startdir=$(pwd);
+
+	if [ "$(whoami)" != "root" ]; then
+		if [ -z "$scan_user_access" ] || [ "$scan_user_access" == "0" ]; then
+			args="$*"
+			if [[ "$args" == *"modsec"* ]]; then
+				echo "1 maldet: OK"
+				exit 0
+			fi
+			header
+			echo "public scanning is currently disabled (scan_user_access=0), please contact your system administrator to enable scan_user_access in $cnffile."
+			exit 1
+		fi
+		pub=1
+		user="$(whoami)"
+		quardir="$userbasedir/$user/quar"
+		sessdir="$userbasedir/$user/sess"
+		tmpdir="$userbasedir/$user/tmp"
+		scan_tmpdir_paths=""
+		hits_history="$sessdir/hits.hist"
+		quar_history="$sessdir/quarantine.hist"
+		clean_history="$sessdir/clean.hist"
+		suspend_history="$sessdir/suspend.hist"
+		monitor_scanned_history="$sessdir/monitor.scanned.hist"
+		if [ ! -d "$userbasedir/$user/tmp" ]; then
+			header
+			echo "public scanning is enabled (scan_user_access=1) but paths do not exist, please contact your system administrator to run '$0 --mkpubpaths' or wait for cron.pub to execute in ~10 minutes."
+			exit 1
+		fi
+		maldet_log="$userbasedir/$user/event_log"
+		clamscan_log="$userbasedir/$user/clamscan_log"
+		mkdir -p "$quardir" "$sessdir" "$tmpdir" 2> /dev/null
+		chmod 711 "$userbasedir" 2> /dev/null
+		touch "$maldet_log" 2> /dev/null
+		# NOTE (PR#478 copilot review, deferred to 2.0.2): the literal
+		# "root" group name is correct on Linux but not on FreeBSD,
+		# where the root user's primary group is "wheel". On FreeBSD
+		# this chown fails silently (stderr is discarded) and the
+		# public-scan paths retain their default touch/mkdir group.
+		# lmd_quarantine.sh has the same class of "chown root:root"
+		# usage. Proper fix: derive the group once in internals.conf
+		# via os_freebsd and use a variable in both files.
+		chown -R "${user}:root" "$userbasedir/$user" 2> /dev/null
+		chmod 750 "$userbasedir/$user" "$quardir" "$sessdir" "$tmpdir" 2> /dev/null
+		chmod 640 "$maldet_log" 2> /dev/null
+		cd "$tmpdir" || return 1
+	else
+		echo "$lmd_version" > "$lmd_version_file"
+	fi
+
+	for _dir in "$sigdir" "$logdir" "$tmpdir" "$sessdir" "$quardir"; do
+		[ -d "$_dir" ] || mkdir -p "$_dir"
+		chmod 750 "$_dir"
+	done
+
+	_require_bin "md5sum" "$md5sum"
+	_require_bin "od" "$od"
+	_require_bin "find" "$find"
+
+	# Cache CPU SHA capability once (hardware doesn't change at runtime).
+	# Effective hashtype is resolved later via _resolve_hashtype() after
+	# -co overrides have been applied.
+	_sha_capability=$(_detect_sha_capability)
+	_effective_hashtype="md5"
+	_effective_clamscan="1"
+	_effective_yara="0"
+
+	if [ "$email_alert" == "1" ] && [ ! -f "$mail" ] && [ ! -f "$sendmail" ]; then
+		email_alert=0
+	fi
+
+	_lmd_alert_init
+	_lmd_elog_init
+
+	# Set signature permissions based on pubscan mode
+	if [ "$scan_user_access" == "1" ]; then
+		sig_file_mode=644; sig_dir_mode=755
+	else
+		sig_file_mode=640; sig_dir_mode=750
+	fi
+
+	for _sigf in "$sig_user_hex_file" "$sig_user_md5_file" "$sig_user_sha256_file" "$sig_user_yara_file"; do
+		if [ ! -f "$_sigf" ]; then
+			touch "$_sigf"
+			chmod "$sig_file_mode" "$_sigf"
+		fi
+	done
+	if [ ! -d "$sig_user_yara_dir" ]; then
+		mkdir -p "$sig_user_yara_dir"
+		chmod $sig_dir_mode "$sig_user_yara_dir"
+	fi
+
+	if [ "$user" == "root" ]; then
+		$sed -i -e '/^$/d' "$ignore_paths" "$ignore_sigs" "$ignore_inotify" "$ignore_file_ext"
+	fi
+
+	scan_cpunice="${scan_cpunice:-19}"
+	scan_ionice="${scan_ionice:-6}"
+	: "${session_legacy_compat:=auto}"
+
+	_build_nice_command "$scan_cpunice" "$scan_ionice" "$scan_cpulimit"
+
+	if [ -z "$cron_daily_scan" ]; then
+		cron_daily_scan=1
+	fi
+
+}
+
+trap_exit() {
+	if [ "$svc" == "m" ]; then
+		echo
+		eout "{glob} monitor interrupt by user, shutting down." 1
+		_monitor_shutdown
+	elif [ "$svc" == "a" ] || [ "$svc" == "r" ] || [ "$svc" == "f" ]; then
+		# Re-entry guard: prevent double execution from concurrent kill+trap (R9)
+		[ "${_scan_aborting:-0}" = "1" ] && return 0
+		_scan_aborting=1
+
+		# Detect stop vs kill by reading abort sentinel content
+		local _trap_is_stop=0
+		if [ -n "${scanid:-}" ] && [ -f "$tmpdir/.abort.$scanid" ]; then
+			local _trap_sentinel_type
+			IFS= read -r _trap_sentinel_type < "$tmpdir/.abort.$scanid" 2>/dev/null  # safe: sentinel may vanish
+			if [ "$_trap_sentinel_type" = "stop" ]; then
+				_trap_is_stop=1
+			fi
+		fi
+
+		echo
+		# Kill background progress ticker before any cleanup
+		_stop_elapsed_timer
+
+		if [ "$_trap_is_stop" -eq 1 ]; then
+			# Stop mode: preserve hit state for --continue, skip finalization
+			_scan_stop_mode=1
+			wait 2>/dev/null  # safe: collect child worker processes exiting via sentinel
+			if [ -n "${scanid:-}" ]; then
+				if [ -f "$scan_session" ] && [ -s "$scan_session" ]; then
+					command cp "$scan_session" "$sessdir/session.hits.$scanid"
+				fi
+				_lifecycle_update_meta "$scanid" "state" "stopped"
+			fi
+			_scan_cleanup
+			command rm -f "$tmpf" 2>/dev/null  # safe: may not exist
+			eout "{glob} scan stopped by operator, checkpoint pending" 1
+			exit 0
+		else
+			# Kill mode: existing behavior
+			if [ -n "${scanid:-}" ]; then
+				_lifecycle_update_meta "$scanid" "state" "killed"
+			fi
+			# Compute end-time vars before session finalization — scan()
+			# sets these at completion but the trap fires before reaching that code.
+			if [ -n "$scan_start" ]; then
+				scan_end_hr=$(date +"%b %e %Y %H:%M:%S %z")
+				scan_end=$(date +"%s")
+				scan_et=$((scan_end - scan_start))
+			fi
+			tot_hits="${progress_hits:-0}"
+			tot_cl="${progress_cleaned:-0}"
+			_scan_finalize_session
+			if [ "$tot_hits" != "0" ]; then
+				if [ "$email_ignore_clean" == "1" ] && [ "$tot_hits" != "$tot_cl" ]; then
+					genalert file $nsess
+				elif [ "$email_ignore_clean" == "0" ]; then
+					genalert file $nsess
+				fi
+			fi
+			_scan_cleanup
+			command rm -f "$tmpf" 2>/dev/null  # safe: temp file may not exist
+			eout "{glob} scan interrupt by user, aborting scan..." 1
+			eout "{scan} scan report saved, to view run: maldet --report $scanid" 1
+			if [ "$quarantine_hits" == "0" ] && [ "$tot_hits" != "0" ]; then
+				eout "{glob} quarantine is disabled! set quarantine_hits=1 in $cnffile or to quarantine results run: maldet -q $scanid" 1
+			fi
+			exit 1
+		fi
+	fi
+}
+
+clean_exit() {
+	# Write TSV session file from in-flight scan_session if it has data
+	if [ -f "$scan_session" ] && [ -s "$scan_session" ]; then
+		# Compute end-time vars if scan was in progress (same as trap_exit)
+		if [ -n "$scan_start" ] && [ -z "$scan_et" ]; then
+			scan_end_hr=$(date +"%b %e %Y %H:%M:%S %z")
+			scan_end=$(date +"%s")
+			scan_et=$((scan_end - scan_start))
+		fi
+		tot_hits="${progress_hits:-${tot_hits:-0}}"
+		tot_cl="${progress_cleaned:-${tot_cl:-0}}"
+		_scan_finalize_session
+	fi
+	# Update lifecycle meta to completed (skip if aborting or no scanid)
+	if [ -n "${scanid:-}" ] && [ "${_scan_aborting:-0}" != "1" ]; then
+		local _end_ts
+		_end_ts=$(command date +%s)
+		_lifecycle_update_meta "$scanid" "state" "completed"
+		_lifecycle_update_meta "$scanid" "completed" "$_end_ts"
+		_lifecycle_update_meta "$scanid" "completed_hr" "$(command date '+%b %d %Y %H:%M:%S %z')"
+		if [ -n "${scan_start:-}" ]; then
+			_lifecycle_update_meta "$scanid" "elapsed" "$(( _end_ts - scan_start ))"
+		fi
+	fi
+	_scan_cleanup
+}
+
+_lmd_alert_init() {
+	# Map LMD config vars to alert_lib env vars.
+	# No export needed -- alert_lib.sh is sourced (same process), not exec'd.
+	# _monitor_housekeeping() calls _lmd_alert_init() on config reload.
+	ALERT_CURL_TIMEOUT="${remote_uri_timeout:-30}"
+	ALERT_CURL_MAX_TIME="120"
+	ALERT_TMPDIR="$tmpdir"
+
+	# Email format and SMTP relay
+	ALERT_EMAIL_FORMAT="${email_format:-html}"
+	ALERT_SMTP_RELAY="${smtp_relay:-}"
+	ALERT_SMTP_FROM="${smtp_from:-}"
+	ALERT_SMTP_USER="${smtp_user:-}"
+	ALERT_SMTP_PASS="${smtp_pass:-}"
+
+	# Slack — bot mode only (LMD uses file upload, requires Bot API)
+	ALERT_SLACK_MODE="bot"
+	ALERT_SLACK_TOKEN="${slack_token:-}"
+	ALERT_SLACK_CHANNEL="${slack_channels:-}"
+
+	# Telegram
+	ALERT_TELEGRAM_BOT_TOKEN="${telegram_bot_token:-}"
+	ALERT_TELEGRAM_CHAT_ID="${telegram_channel_id:-}"
+
+	# Discord
+	ALERT_DISCORD_WEBHOOK_URL="${discord_webhook_url:-}"
+
+	# Enable/disable channels
+	if [ "${slack_alert:-0}" = "1" ]; then
+		alert_channel_enable "slack"
+	else
+		alert_channel_disable "slack"
+	fi
+	if [ "${telegram_alert:-0}" = "1" ]; then
+		alert_channel_enable "telegram"
+	else
+		alert_channel_disable "telegram"
+	fi
+	if [ "${discord_alert:-0}" = "1" ]; then
+		alert_channel_enable "discord"
+	else
+		alert_channel_disable "discord"
+	fi
+
+	# Warn if Slack is enabled but token looks like the conf.maldet placeholder
+	if [ "${slack_alert:-0}" = "1" ]; then
+		case "$slack_token" in
+			AUTH_TOKEN|"")
+				eout "{alert} WARNING: slack_alert=1 but slack_token is unset or placeholder; Slack alerts will fail"
+				;;
+		esac
+	fi
+}
+
+_lmd_elog_init() {
+	# Map LMD config to elog_lib env vars
+	ELOG_APP="maldet"
+	ELOG_LOG_DIR="$logdir"
+	ELOG_LOG_FILE="$maldet_log"
+	ELOG_TS_FORMAT="%b %d %Y %H:%M:%S"
+	ELOG_STDOUT="flag"
+	ELOG_STDOUT_PREFIX="short"
+	ELOG_FORMAT="classic"
+
+	# Truncation: elog_lib caps at N lines (inode-preserving)
+	if [ "$maldet_log_truncate" == "1" ]; then
+		ELOG_LOG_MAX_LINES=20000
+	else
+		ELOG_LOG_MAX_LINES=0
+	fi
+
+	# Audit trail — disabled for non-root users
+	if [ "$(id -u)" -eq 0 ]; then
+		ELOG_AUDIT_FILE="$logdir/audit.log"
+		[ -d "$logdir" ] || command mkdir -m 750 "$logdir" 2>/dev/null  # safe: dir may exist from concurrent run
+	else
+		unset ELOG_AUDIT_FILE
+	fi
+
+	export ELOG_APP ELOG_LOG_DIR ELOG_LOG_FILE ELOG_TS_FORMAT
+	export ELOG_STDOUT ELOG_STDOUT_PREFIX ELOG_FORMAT
+	export ELOG_LOG_MAX_LINES ELOG_AUDIT_FILE
+
+	if command -v elog_init >/dev/null 2>&1; then
+		elog_init
+		# elog_init enables file+audit but not stdout; enable explicitly
+		elog_output_enable "stdout" 2>/dev/null || true  # safe: stdout module always pre-registered at elog_lib load
+	fi
+}
+
+_lmd_elog_event() {
+	command -v elog_event >/dev/null 2>&1 && elog_event "$@"
+}
+
+postrun() {
+	if [ ! "$tot_hits" ]; then
+		exit 0
+	elif [ "$tot_hits" == "0" ]; then
+		exit 0
+	elif [ "$tot_hits" -ge "1" ]; then
+		exit 2
+	fi
+}

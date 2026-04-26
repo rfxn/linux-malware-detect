@@ -1,0 +1,3 @@
+This is a clean test file with no malicious content.
+It is used to verify that LMD does not produce false positives.
+The quick brown fox jumps over the lazy dog.

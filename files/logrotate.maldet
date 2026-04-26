@@ -1,0 +1,11 @@
+/var/log/maldet/event_log
+/var/log/maldet/clamscan_log
+/var/log/maldet/audit.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

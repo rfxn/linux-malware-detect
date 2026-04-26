@@ -1,0 +1,43 @@
+# pkg.manifest — LMD (Linux Malware Detect) project manifest
+# Consumed by pkg_gen.sh to generate RPM/DEB/Docker/CI artifacts.
+# Consumed by install.sh/uninstall.sh for project metadata.
+
+PKG_NAME="maldet"
+PKG_VERSION="2.0.1"
+PKG_SUMMARY="Linux Malware Detect — malware scanner for Linux"
+PKG_DESCRIPTION="Linux Malware Detect (LMD) is a malware scanner for Linux designed \
+around the threats faced in shared hosted environments. It uses threat data from \
+network edge intrusion detection systems to extract malware that is actively being \
+used in attacks and generates signatures for detection. Features include MD5 hash, \
+HEX pattern, statistical analysis, and YARA rule scanning, inotify real-time \
+monitoring, ClamAV integration, quarantine/restore/clean operations, and \
+multi-channel alerting (email, Slack, Telegram, Discord)."
+PKG_LICENSE="GPLv2+"
+PKG_URL="https://github.com/rfxn/linux-malware-detect"
+PKG_MAINTAINER="R-fx Networks <proj@rfxn.com>"
+PKG_INSTALL_PATH="/usr/local/maldetect"
+PKG_BIN_NAME="maldet"
+PKG_BIN_LEGACY="/usr/local/sbin/maldet"
+PKG_SECTION="1"
+PKG_COPYRIGHT_START="2002"
+PKG_VERSION_CMD="/usr/local/sbin/maldet --version 2>/dev/null | head -1"
+PKG_SERVICE_NAME="maldet"
+
+# Feature flags for conditional template blocks
+PKG_HAS_SYSTEMD_SERVICE="1"
+PKG_HAS_SYSV_INIT="1"
+PKG_HAS_CRON_D="1"
+PKG_HAS_CRON_DAILY="1"
+PKG_HAS_CRON_WEEKLY="1"
+PKG_HAS_LOGROTATE="0"
+
+# Service lifecycle
+PKG_CHKCONFIG_LEVELS="2345"
+PKG_UPDATERCD_START="70"
+PKG_UPDATERCD_STOP="30"
+PKG_SLACKWARE_PRIORITY="70"
+
+# Backup
+PKG_BACKUP_METHOD="move"
+PKG_BACKUP_SYMLINK=".bk.last"
+PKG_BACKUP_PRUNE_DAYS="30"

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# cron.watchdog — independent fallback sig updater (weekly, triggers emergency update if sigs are stale)
+# Intentionally simple and decoupled from main LMD codebase to survive bad upgrades (LOAD-BEARING INVARIANT)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:$PATH
+inspath='/usr/local/maldetect'
+
+# Verify install exists
+[ -f "$inspath/internals/internals.conf" ] || exit 0
+
+# Load just enough state to check staleness — do NOT source internals.conf
+# or functions so a broken codebase cannot prevent this script from running.
+sig_version_file="$inspath/sigs/maldet.sigs.ver"
+# Intentionally uses $inspath/logs/ (not /var/log/maldet/) — this script must
+# remain self-contained and survive broken installs. After FHS migration,
+# $inspath/logs is a symlink to /var/log/maldet/, so this path still works.
+event_log="$inspath/logs/event_log"
+watchdog_stale_days="${LMD_WATCHDOG_STALE_DAYS:-7}"
+[[ "$watchdog_stale_days" =~ ^[0-9]+$ ]] || watchdog_stale_days=7
+
+# Check signature freshness by file modification time
+if [ -f "$sig_version_file" ]; then
+    sig_mtime=$(stat -c %Y "$sig_version_file" 2>/dev/null)
+    if [ -z "$sig_mtime" ]; then
+        sig_age_days=999
+    else
+        sig_age_days=$(( ($(date +%s) - sig_mtime) / 86400 ))
+    fi
+else
+    sig_age_days=999
+fi
+
+if [ "$sig_age_days" -le "$watchdog_stale_days" ]; then
+    # Signatures are fresh — nothing to do
+    exit 0
+fi
+
+# Signatures are stale — attempt emergency update
+echo "$(date) maldet-watchdog: signatures are ${sig_age_days}d old (threshold: ${watchdog_stale_days}d), triggering emergency update" >> "$event_log"
+
+# Run signature update
+$inspath/maldet -u 2>&1 | tail -5 >> "$event_log"
+sig_update_rc=${PIPESTATUS[0]}
+
+# Run version update regardless of signature update result
+$inspath/maldet -d 2>&1 | tail -5 >> "$event_log"
+ver_update_rc=${PIPESTATUS[0]}
+
+echo "$(date) maldet-watchdog: emergency update completed (sigup rc=$sig_update_rc, verup rc=$ver_update_rc)" >> "$event_log"

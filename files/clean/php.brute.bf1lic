@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
 export PATH=/sbin:/bin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
 # $1 file path, $2 signature name, $3 file owner, $4 file mode, $5 file size (b), $6 file md5sum
 if [ -f "$1" ]; then

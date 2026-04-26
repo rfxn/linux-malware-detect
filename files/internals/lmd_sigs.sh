@@ -1,0 +1,710 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Signature compilation and management
+
+# Source guard
+[[ -n "${_LMD_SIGS_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_SIGS_LOADED=1
+
+_format_number() {
+	# Format integer with comma thousands separators.
+	# Uses printf locale grouping if available, falls back to sed.
+	local _n="$1"
+	if [ -z "$_fmt_num_method" ]; then
+		if printf "%'d" 1000 2>/dev/null | grep -q ','; then
+			_fmt_num_method="printf"
+		else
+			_fmt_num_method="sed"
+		fi
+	fi
+	if [ "$_fmt_num_method" == "printf" ]; then
+		printf "%'d" "$_n"
+	else
+		printf "%d" "$_n" | sed ':a;s/\([0-9]\)\([0-9]\{3\}\)$/\1,\2/;ta'
+	fi
+}
+
+_count_signatures() {
+	local _md5_src="$1" _hex_src="$2"
+	md5_sigs=$($wc -l < "$_md5_src")
+	sha256_sigs=0
+	if [ -f "$sig_sha256_file" ] && [ -s "$sig_sha256_file" ]; then
+		sha256_sigs=$($wc -l < "$sig_sha256_file")
+	elif [ -n "$runtime_sha256" ] && [ -s "$runtime_sha256" ]; then
+		sha256_sigs=$($wc -l < "$runtime_sha256")
+	fi
+	hex_sigs=$($wc -l < "$_hex_src")
+	yara_sigs=$(grep -E -c '^rule ' "$sig_yara_file" 2>/dev/null || true)  # safe: grep exits 1 when no rule match found; zero count is valid
+	user_yara_sigs=0
+	if [ -f "$sig_user_yara_file" ] && [ -s "$sig_user_yara_file" ]; then
+		user_yara_sigs=$((user_yara_sigs + $(grep -E -c '^rule ' "$sig_user_yara_file" 2>/dev/null || true)))  # safe: grep exits 1 when no rule match found; zero count is valid
+	fi
+	for _yar in "$sig_user_yara_dir"/*.yar "$sig_user_yara_dir"/*.yara; do
+		if [ -f "$_yar" ] && [ -s "$_yar" ]; then
+			user_yara_sigs=$((user_yara_sigs + $(grep -E -c '^rule ' "$_yar" 2>/dev/null || true)))  # safe: grep exits 1 when no rule match found; zero count is valid
+		fi
+	done
+	if [ ! -f "$sig_user_md5_file" ]; then
+		user_md5_sigs=0
+	else
+		user_md5_sigs=$($wc -l < "$sig_user_md5_file")
+	fi
+	user_sha256_sigs=0
+	if [ -f "$sig_user_sha256_file" ] && [ -s "$sig_user_sha256_file" ]; then
+		user_sha256_sigs=$($wc -l < "$sig_user_sha256_file")
+	fi
+	if [ ! -f "$sig_user_hex_file" ]; then
+		user_hex_sigs=0
+	else
+		user_hex_sigs=$($wc -l < "$sig_user_hex_file")
+	fi
+	csig_sigs=0
+	if [ -f "$sig_csig_file" ] && [ -s "$sig_csig_file" ]; then
+		csig_sigs=$(grep -c -vE '^\s*$|^\s*#' "$sig_csig_file" 2>/dev/null || true)  # safe: grep exits 1 when no match; zero count is valid
+	fi
+	user_csig_sigs=0
+	if [ -f "$sig_user_csig_file" ] && [ -s "$sig_user_csig_file" ]; then
+		user_csig_sigs=$(grep -c -vE '^\s*$|^\s*#' "$sig_user_csig_file" 2>/dev/null || true)  # safe: grep exits 1 when no match; zero count is valid
+	fi
+	user_sigs=$((user_hex_sigs + user_md5_sigs + user_sha256_sigs + user_yara_sigs + user_csig_sigs))
+
+	# Deduplicate hash sigs — MD5 and SHA-256 are the same samples in different formats.
+	# Report only the active hash type's count to avoid inflating tot_sigs.
+	case "${_effective_hashtype:-}" in
+		md5)    hash_sigs=$md5_sigs;    _hash_label="MD5" ;;
+		sha256) hash_sigs=$sha256_sigs; _hash_label="SHA" ;;
+		both)
+			if [ "$md5_sigs" -le "$sha256_sigs" ]; then
+				hash_sigs=$md5_sigs
+			else
+				hash_sigs=$sha256_sigs
+			fi
+			_hash_label="MD5/SHA"
+			;;
+		*)
+			# Fallback (sigup path — no hashtype resolved)
+			if [ "$md5_sigs" -gt 0 ] && [ "$sha256_sigs" -gt 0 ]; then
+				if [ "$md5_sigs" -le "$sha256_sigs" ]; then
+					hash_sigs=$md5_sigs
+				else
+					hash_sigs=$sha256_sigs
+				fi
+				_hash_label="MD5/SHA"
+			elif [ "$md5_sigs" -gt 0 ]; then
+				hash_sigs=$md5_sigs
+				_hash_label="MD5"
+			elif [ "$sha256_sigs" -gt 0 ]; then
+				hash_sigs=$sha256_sigs
+				_hash_label="SHA"
+			else
+				hash_sigs=0
+				_hash_label="MD5/SHA"
+			fi
+			;;
+	esac
+
+	# YARA label — reflects which engine processes rules
+	local _yara_active_sigs
+	if [ "$scan_yara" == "1" ]; then
+		_yara_label="YARA"
+		_yara_active_sigs=$yara_sigs
+	elif [ "$scan_clamscan" == "1" ]; then
+		_yara_label="YARA(cav)"
+		_yara_active_sigs=$yara_sigs
+	else
+		_yara_label="YARA(no engine)"
+		_yara_active_sigs=0
+	fi
+
+	tot_sigs=$((hash_sigs + hex_sigs + csig_sigs + _yara_active_sigs + user_sigs))
+}
+
+_csig_compile_rules() {
+	# Parse csig.dat lines and compile to batch-format rule files.
+	# Input: $1 = runtime csig file (merged base + custom, ignore-filtered)
+	# Output: writes runtime_csig_batch_compiled plus tier files (literals/wildcards/universals).
+	# Format: SIGNAME\tTYPE\tTHRESHOLD\tSPEC (SID-referenced)
+	local _csig_src="$1"
+
+	# Batch-format output files
+	if [ -n "$runtime_csig_batch_compiled" ]; then
+		: > "$runtime_csig_batch_compiled"
+		: > "$runtime_csig_literals"
+		: > "$runtime_csig_wildcards"
+		: > "$runtime_csig_universals"
+	fi
+
+	local _csig_awk_warnings
+	_csig_awk_warnings=$(mktemp "$tmpdir/.csig_awk_warn.XXXXXX")
+	awk -v batch_file="$runtime_csig_batch_compiled" \
+		-v lit_file="$runtime_csig_literals" \
+		-v wc_file="$runtime_csig_wildcards" \
+		-v uni_file="$runtime_csig_universals" '
+function hex2dec(s,    hi, lo, hx) {
+	hx = "0123456789abcdef"
+	hi = index(hx, substr(s, 1, 1)) - 1
+	lo = index(hx, substr(s, 2, 1)) - 1
+	if (hi < 0 || lo < 0) return -1
+	return hi * 16 + lo
+}
+function compile_wildcards(pat,    ere, i, c, c2, n, gap, lo, hi, pre, post, rep, parts) {
+	ere = pat
+	gsub(/\?\?/, "[0-9a-f]{2}", ere)
+	n = length(ere)
+	pat = ""
+	for (i = 1; i <= n; i++) {
+		c = substr(ere, i, 1)
+		if (c == "[") {
+			while (i <= n && substr(ere, i, 1) != "]") { pat = pat substr(ere, i, 1); i++ }
+			if (i <= n) pat = pat substr(ere, i, 1)
+		} else if (c == "(") {
+			while (i <= n && substr(ere, i, 1) != ")") { pat = pat substr(ere, i, 1); i++ }
+			if (i <= n) pat = pat substr(ere, i, 1)
+		} else if (c == "?" && i < n) {
+			c2 = substr(ere, i+1, 1)
+			if (c2 ~ /[0-9a-f]/) { pat = pat "[0-9a-f]" c2; i++ }
+			else pat = pat c
+		} else if (c ~ /[0-9a-f]/ && i < n && substr(ere, i+1, 1) == "?") {
+			if (i+1 < n && substr(ere, i+2, 1) ~ /[0-9a-f]/) pat = pat c
+			else { pat = pat c "[0-9a-f]"; i++ }
+		} else {
+			pat = pat c
+		}
+	}
+	ere = pat
+	gsub(/\*/, "[0-9a-f]*", ere)
+	while (match(ere, /\{[0-9]+-[0-9]+\}/)) {
+		gap = substr(ere, RSTART+1, RLENGTH-2)
+		split(gap, parts, "-")
+		lo = parts[1] * 2; hi = parts[2] * 2
+		pre = substr(ere, 1, RSTART-1)
+		post = substr(ere, RSTART+RLENGTH)
+		ere = pre "[0-9a-f]{" lo "," hi "}" post
+	}
+	return ere
+}
+function wide_interleave(pat,    out, i, n, c, c2, gap, inner, glo, ghi, alt, gp) {
+	n = length(pat); out = ""
+	for (i = 1; i <= n; ) {
+		c = substr(pat, i, 1); c2 = substr(pat, i, 2)
+		if (c2 == "??") { out = out "??00"; i += 2 }
+		else if (c == "*") { out = out "*"; i++ }
+		else if (c == "{") {
+			gap = substr(pat, i)
+			sub(/\}.*/, "}", gap)
+			inner = substr(gap, 2, length(gap)-2)
+			split(inner, gp, "-")
+			glo = gp[1] * 2; ghi = gp[2] * 2
+			out = out "{" glo "-" ghi "}"
+			i += length(gap)
+		} else if (c == "(") {
+			alt = substr(pat, i)
+			sub(/\).*/, ")", alt)
+			out = out alt
+			i += length(alt)
+		} else {
+			if (i < n) { out = out c2 "00"; i += 2 }
+			else { out = out c; i++ }
+		}
+	}
+	# Remove trailing 00
+	if (substr(out, length(out)-1) == "00") out = substr(out, 1, length(out)-2)
+	return out
+}
+function case_fold(ere,    out, i, n, c, c2, d, uc, lc) {
+	n = length(ere); out = ""
+	for (i = 1; i <= n; ) {
+		c = substr(ere, i, 1)
+		if (c == "[") {
+			while (i <= n && substr(ere, i, 1) != "]") { out = out substr(ere, i, 1); i++ }
+			if (i <= n) { out = out substr(ere, i, 1); i++ }
+		} else if (c == "(") {
+			while (i <= n && substr(ere, i, 1) != ")") { out = out substr(ere, i, 1); i++ }
+			if (i <= n) { out = out substr(ere, i, 1); i++ }
+		} else if (c == "{") {
+			while (i <= n && substr(ere, i, 1) != "}") { out = out substr(ere, i, 1); i++ }
+			if (i <= n) { out = out substr(ere, i, 1); i++ }
+		} else {
+			c2 = substr(ere, i, 2)
+			if (c2 ~ /^[0-9a-f][0-9a-f]$/) {
+				d = hex2dec(c2)
+				if (d >= 65 && d <= 90) {
+					lc = sprintf("%02x", d + 32)
+					out = out "(" c2 "|" lc ")"
+				} else if (d >= 97 && d <= 122) {
+					uc = sprintf("%02x", d - 32)
+					out = out "(" uc "|" c2 ")"
+				} else {
+					out = out c2
+				}
+				i += 2
+			} else {
+				out = out c; i++
+			}
+		}
+	}
+	return out
+}
+function compile_subsig(raw,    do_icase, do_wide, ere) {
+	do_icase = 0; do_wide = 0
+	if (substr(raw, 1, 3) == "iw:" || substr(raw, 1, 3) == "wi:") {
+		do_icase = 1; do_wide = 1; raw = substr(raw, 4)
+	} else if (substr(raw, 1, 2) == "i:") {
+		do_icase = 1; raw = substr(raw, 3)
+	} else if (substr(raw, 1, 2) == "w:") {
+		do_wide = 1; raw = substr(raw, 3)
+	}
+	if (do_wide) raw = wide_interleave(raw)
+	ere = compile_wildcards(raw)
+	if (do_icase) ere = case_fold(ere)
+	return ere
+}
+function get_sid(ere) {
+	if (ere in sid_map) return sid_map[ere]
+	sid_map[ere] = next_sid
+	# Classify tier
+	if (length(ere) < 8) {
+		print next_sid >> uni_file
+	} else if (ere ~ /\[0-9a-f\]|\(.*\||\|/) {
+		printf "%d\t%s\n", next_sid, ere >> wc_file
+	} else {
+		printf "%d\t%s\n", next_sid, ere >> lit_file
+	}
+	next_sid++
+	return sid_map[ere]
+}
+BEGIN { next_sid = 0 }
+{
+	# Skip empty lines and comments
+	if ($0 == "" || /^[[:space:]]*$/ || /^[[:space:]]*#/) next
+	line = $0
+	# Split on last colon: signame = after last :, sigs_field = before it
+	n = split(line, flds, ":")
+	if (n < 2) {
+		print "{csig} WARNING: malformed csig line, skipping: " substr(line, 1, 60) > "/dev/stderr"
+		next
+	}
+	signame = flds[n]
+	sigs_field = flds[1]
+	for (i = 2; i < n; i++) sigs_field = sigs_field ":" flds[i]
+	if (sigs_field == "" || signame == "") {
+		print "{csig} WARNING: malformed csig line, skipping: " substr(line, 1, 60) > "/dev/stderr"
+		next
+	}
+	# Split sigs_field on top-level || (respect paren depth)
+	delete subsigs; nsubs = 0; paren = 0; cur = ""
+	slen = length(sigs_field)
+	for (i = 1; i <= slen; i++) {
+		ch = substr(sigs_field, i, 1)
+		if (ch == "(") { paren++; cur = cur ch }
+		else if (ch == ")") { paren--; cur = cur ch }
+		else if (ch == "|" && i < slen && substr(sigs_field, i+1, 1) == "|" && paren == 0) {
+			if (cur != "") { nsubs++; subsigs[nsubs] = cur }
+			cur = ""; i++
+		} else {
+			cur = cur ch
+		}
+	}
+	if (cur != "") { nsubs++; subsigs[nsubs] = cur }
+	# Detect && — not valid hex or a recognized separator (use || between clauses)
+	if (index(sigs_field, "&&") > 0) {
+		print "{csig} WARNING: found && in csig (not a valid separator; use || between clauses), skipping: " signame > "/dev/stderr"
+		next
+	}
+	if (nsubs == 0) {
+		print "{csig} WARNING: no subsigs in csig line, skipping: " substr(line, 1, 60) > "/dev/stderr"
+		next
+	}
+	# Determine rule type
+	has_groups = 0; has_plain = 0
+	for (i = 1; i <= nsubs; i++) {
+		if (substr(subsigs[i], 1, 1) == "(") has_groups = 1
+		else has_plain = 1
+	}
+	if (nsubs == 1 && has_groups == 0) { rule_type = "single"; threshold = 1 }
+	else if (has_groups == 1) { rule_type = "group"; threshold = 0 }
+	else { rule_type = "and"; threshold = 0 }
+	# Check for ;N threshold suffix on signame
+	if (match(signame, /;[0-9]+$/)) {
+		threshold = substr(signame, RSTART+1) + 0
+		signame = substr(signame, 1, RSTART-1)
+		if (threshold == 0) {
+			print "{csig} WARNING: threshold=0 produces always-matching rule, skipping: " signame > "/dev/stderr"
+			next
+		}
+		if (nsubs > 1 && has_groups == 0) rule_type = "or"
+	}
+	# Compile each subsig
+	compile_ok = 1; batch_spec = ""
+	for (i = 1; i <= nsubs; i++) {
+		sub_raw = subsigs[i]
+		if (substr(sub_raw, 1, 1) == "(") {
+			# Grouped OR: strip leading (, find );N or )
+			grp_body = substr(sub_raw, 2)
+			grp_thresh = 1
+			if (match(grp_body, /\);[0-9]+$/)) {
+				grp_thresh = substr(grp_body, RSTART+2) + 0
+				grp_body = substr(grp_body, 1, RSTART-1)
+			} else {
+				sub(/\)$/, "", grp_body)
+			}
+			if (grp_thresh == 0) {
+				print "{csig} WARNING: group threshold=0 produces always-matching group, skipping rule: " signame > "/dev/stderr"
+				compile_ok = 0; break
+			}
+			# Split group on ||
+			delete grp_subs; gn = 0; gcur = ""
+			glen = length(grp_body)
+			for (gi = 1; gi <= glen; gi++) {
+				gc = substr(grp_body, gi, 1)
+				if (gc == "|" && gi < glen && substr(grp_body, gi+1, 1) == "|") {
+					if (gcur != "") { gn++; grp_subs[gn] = gcur }
+					gcur = ""; gi++
+				} else {
+					gcur = gcur gc
+				}
+			}
+			if (gcur != "") { gn++; grp_subs[gn] = gcur }
+			grp_sids = ""
+			for (gi = 1; gi <= gn; gi++) {
+				gere = compile_subsig(grp_subs[gi])
+				if (gere == "") {
+					print "{csig} WARNING: failed to compile group subsig, skipping rule: " signame > "/dev/stderr"
+					compile_ok = 0; break
+				}
+				if (length(gere) < 8) {
+					print "{csig} WARNING: universal subsig (length " length(gere) ") in OR group defeats filtering, skipping rule: " signame > "/dev/stderr"
+					compile_ok = 0; break
+				}
+				gsid = get_sid(gere)
+				grp_sids = grp_sids (grp_sids == "" ? "" : "+") gsid
+			}
+			if (compile_ok == 0) break
+			batch_spec = batch_spec (batch_spec == "" ? "" : ",") "or:" grp_thresh ":" grp_sids
+		} else {
+			# Plain subsig
+			ere = compile_subsig(sub_raw)
+			if (ere == "") {
+				print "{csig} WARNING: failed to compile subsig, skipping rule: " signame > "/dev/stderr"
+				compile_ok = 0; break
+			}
+			sid = get_sid(ere)
+			batch_spec = batch_spec (batch_spec == "" ? "" : ",") sid
+		}
+	}
+	if (compile_ok == 0) next
+	# Prepend {CSIG} if not present
+	if (substr(signame, 1, 6) != "{CSIG}") signame = "{CSIG}" signame
+	# Write batch rule
+	printf "%s\t%s\t%s\t%s\n", signame, rule_type, threshold, batch_spec >> batch_file
+}' "$_csig_src" 2>"$_csig_awk_warnings"
+	# Route awk warnings through eout for event_log consistency
+	if [ -s "$_csig_awk_warnings" ]; then
+		local _warn_line
+		while IFS= read -r _warn_line; do
+			eout "$_warn_line" 1
+		done < "$_csig_awk_warnings"
+	fi
+	command rm -f "$_csig_awk_warnings"
+
+	runtime_csig_count=$($wc -l < "$runtime_csig_batch_compiled" 2>/dev/null || echo 0)  # safe: file absent when no csig rules compiled; zero is valid
+}
+
+_hex_compile_wildcards_awk() {
+	# Compile HEX wildcard patterns to ERE via single awk pass.
+	# Input: $_hex_wc_tmp (tab: PATTERN\tSIGNAME)
+	# Output: $runtime_hex_regex (tab: ORIG_PATTERN\tERE), $runtime_hex_literal (fallback)
+	[ -s "$_hex_wc_tmp" ] || return 0
+	awk -F'\t' -v regfile="$runtime_hex_regex" \
+		-v litfile="$runtime_hex_literal" '
+function compile_wildcards(pat,    ere, i, c, c2, lo, hi, n, gap, pre, post, rep, parts) {
+	ere = pat
+	# Stage 1: ?? → [0-9a-f]{2} (must precede nibble walk)
+	gsub(/\?\?/, "[0-9a-f]{2}", ere)
+	# Stage 2: Nibble wildcards via character walk
+	#   ?x (high nibble wild) → [0-9a-f]x
+	#   x? (low nibble wild)  → x[0-9a-f]
+	n = length(ere)
+	pat = ""
+	for (i = 1; i <= n; i++) {
+		c = substr(ere, i, 1)
+		if (c == "[") {
+			# Skip entire character class [...]
+			while (i <= n && substr(ere, i, 1) != "]") {
+				pat = pat substr(ere, i, 1)
+				i++
+			}
+			if (i <= n) pat = pat substr(ere, i, 1)
+		} else if (c == "(") {
+			# Skip entire alternation group (...)
+			while (i <= n && substr(ere, i, 1) != ")") {
+				pat = pat substr(ere, i, 1)
+				i++
+			}
+			if (i <= n) pat = pat substr(ere, i, 1)
+		} else if (c == "?" && i < n) {
+			c2 = substr(ere, i+1, 1)
+			if (c2 ~ /[0-9a-f]/) {
+				pat = pat "[0-9a-f]" c2
+				i++
+			} else {
+				pat = pat c
+			}
+		} else if (c ~ /[0-9a-f]/ && i < n && substr(ere, i+1, 1) == "?") {
+			# Peek ahead: only x? if next-next is NOT hex (avoid consuming x from x?x pattern)
+			if (i+1 < n && substr(ere, i+2, 1) ~ /[0-9a-f]/) {
+				pat = pat c
+			} else {
+				pat = pat c "[0-9a-f]"
+				i++
+			}
+		} else {
+			pat = pat c
+		}
+	}
+	ere = pat
+	# Stage 3: * → [0-9a-f]*
+	gsub(/\*/, "[0-9a-f]*", ere)
+	# Stage 4: {N-M} → [0-9a-f]{2N,2M} bounded gap
+	while (match(ere, /\{[0-9]+-[0-9]+\}/)) {
+		gap = substr(ere, RSTART+1, RLENGTH-2)
+		split(gap, parts, "-")
+		lo = parts[1] * 2
+		hi = parts[2] * 2
+		pre = substr(ere, 1, RSTART-1)
+		post = substr(ere, RSTART+RLENGTH)
+		rep = "[0-9a-f]{" lo "," hi "}"
+		ere = pre rep post
+	}
+	return ere
+}
+{
+	orig = $1
+	ere = compile_wildcards(orig)
+	# Re-check: if compiled ERE still has no wildcard metacharacters,
+	# route to literal file (Phase 5a regex was broader than actual)
+	if (ere ~ /\[0-9a-f\]|\([^)]*\|[^)]*\)|\|/) {
+		print orig "\t" ere >> regfile
+	} else {
+		print orig >> litfile
+	}
+}' "$_hex_wc_tmp"
+}
+
+_filter_sigs_inplace() {
+	# Filter a sig file in-place, removing lines matching ignore_sigs patterns.
+	# Uses ERE full-line matching (suitable for colon-delimited sig formats).
+	# Note: mv replaces the inode (atomic rename). Callers must not hold open FDs to _target.
+	local _target="$1"
+	[ -s "$_target" ] || return 0
+	local _tmpf
+	_tmpf=$(mktemp "$tmpdir/.sigfilt.XXXXXX")
+	grep -E -vf "$ignore_sigs" "$_target" > "$_tmpf" || true  # safe: grep exits 1 when all sigs ignored
+	command mv "$_tmpf" "$_target"
+}
+
+gensigs() {
+	local _silent="$1"
+	if [ -z "$scanid" ]; then
+		eout "{scan} {error} gensigs called with empty scanid, aborting" 1
+		return 1
+	fi
+	# Clean up previous runtime sig files if re-called (monitor path)
+	command rm -f "$runtime_ndb" "$runtime_hdb" "$runtime_hexstrings" "$runtime_md5" \
+		"$runtime_sha256" "$runtime_hsb" \
+		"$runtime_hex_literal" "$runtime_hex_regex" "$runtime_hex_sigmap" \
+		"$runtime_csig_batch_compiled" "$runtime_csig_literals" \
+		"$runtime_csig_wildcards" "$runtime_csig_universals" \
+		2>/dev/null  # vars empty on first call
+	runtime_ndb=""
+	runtime_hdb=""
+	runtime_hexstrings=$(mktemp "$tmpdir/.runtime.hexsigs.$scanid.XXXXXX")
+	runtime_md5=$(mktemp "$tmpdir/.runtime.md5sigs.$scanid.XXXXXX")
+	if [ "$scan_clamscan" == "1" ]; then
+		runtime_ndb=$(mktemp "$tmpdir/.runtime.user.ndb.$scanid.XXXXXX")
+		ln -fs "$runtime_ndb" "$sigdir/lmd.user.ndb" 2>/dev/null
+	fi
+	# Only create .hdb (ClamAV MD5 DB) when hashtype includes md5
+	if [ "$_effective_hashtype" != "sha256" ]; then
+		runtime_hdb=$(mktemp "$tmpdir/.runtime.user.hdb.$scanid.XXXXXX")
+		ln -fs "$runtime_hdb" "$sigdir/lmd.user.hdb" 2> /dev/null
+	else
+		command rm -f "$sigdir/lmd.user.hdb" 2>/dev/null  # safe: file may not exist on fresh install
+	fi
+	if [ ! -f "$sig_user_yara_file" ]; then
+		touch "$sig_user_yara_file"
+		chmod $sig_file_mode "$sig_user_yara_file"
+	fi
+	if [ ! -d "$sig_user_yara_dir" ]; then
+		mkdir -p "$sig_user_yara_dir"
+		chmod $sig_dir_mode "$sig_user_yara_dir"
+	fi
+	if [ -s "$sig_user_hex_file" ]; then
+		grep -h -vE '^\s*$' "$sig_hex_file" "$sig_user_hex_file" > "$runtime_hexstrings"
+	else
+		cat "$sig_hex_file" > "$runtime_hexstrings"
+	fi
+	if [ -s "$sig_user_md5_file" ]; then
+		grep -h -vE '^\s*$' "$sig_md5_file" "$sig_user_md5_file" > "$runtime_md5"
+	else
+		cat "$sig_md5_file" > "$runtime_md5"
+	fi
+	# SHA-256 runtime sigs — conditional on effective hashtype
+	runtime_sha256=""
+	if [ "$_effective_hashtype" == "sha256" ] || [ "$_effective_hashtype" == "both" ]; then
+		runtime_sha256=$(mktemp "$tmpdir/.runtime.sha256sigs.$scanid.XXXXXX")
+		if [ -f "$sig_sha256_file" ] && [ -s "$sig_sha256_file" ]; then
+			if [ -s "$sig_user_sha256_file" ]; then
+				grep -h -vE '^\s*$' "$sig_sha256_file" "$sig_user_sha256_file" > "$runtime_sha256"
+			else
+				cat "$sig_sha256_file" > "$runtime_sha256"
+			fi
+		elif [ -s "$sig_user_sha256_file" ]; then
+			# Upgrade path: no base sha256v2.dat yet, only custom sigs
+			grep -vE '^\s*$' "$sig_user_sha256_file" > "$runtime_sha256"
+		else
+			# No SHA-256 sigs available at all
+			: > "$runtime_sha256"
+			if [ "$_effective_hashtype" == "sha256" ]; then
+				eout "{scan} WARNING: scan_hashtype=sha256 but no SHA-256 signature files found; SHA-256 pass will have zero signatures" 1
+			fi
+		fi
+	fi
+	if [ "$scan_clamscan" == "1" ]; then
+		if [ -s "$sig_user_hex_file" ]; then
+			while IFS= read -r i; do
+				name=$(echo "$i" | tr '%' ' ' | awk '{print$2}')
+				hex=$(echo "$i" | tr '%' ' ' | awk '{print$1}')
+				if [ -n "$name" ] && [ -n "$hex" ]; then
+					echo "{HEX}$name:0:*:$hex" >> "$runtime_ndb"
+				fi
+			done < <(sed 's/{HEX}//' "$sig_user_hex_file" | tr ':' '%' | grep -vE "^\s*$")
+			cat "$sig_cav_hex_file" >> "$runtime_ndb"
+		else
+			command cp "$sig_cav_hex_file" "$runtime_ndb"
+		fi
+		# ClamAV .hdb (MD5 hash DB) — only when hashtype includes md5
+		if [ -n "$runtime_hdb" ]; then
+			if [ -s "$sig_user_md5_file" ]; then
+				# Convert user MD5 sigs from LMD format (HASH:SIZE:{MD5}name) to ClamAV .hdb format (HASH:SIZE:name)
+				sed 's/{MD5}//' "$sig_user_md5_file" | grep -vE "^\s*$" > "$runtime_hdb"
+				cat "$sig_cav_md5_file" >> "$runtime_hdb"
+			else
+				command cp "$sig_cav_md5_file" "$runtime_hdb"
+			fi
+		fi
+		# ClamAV .hsb (SHA-256 hash DB) — requires ClamAV >= 0.97
+		runtime_hsb=""
+		if [ -n "$runtime_sha256" ] && [ -s "$runtime_sha256" ] && [ -n "$_clamav_supports_hsb" ]; then
+			runtime_hsb=$(mktemp "$tmpdir/.runtime.user.hsb.$scanid.XXXXXX")
+			if [ -s "$sig_user_sha256_file" ]; then
+				sed 's/{SHA256}//' "$sig_user_sha256_file" | grep -vE "^\s*$" > "$runtime_hsb"
+				[ -f "$sig_cav_sha256_file" ] && [ -s "$sig_cav_sha256_file" ] && cat "$sig_cav_sha256_file" >> "$runtime_hsb"
+			elif [ -f "$sig_cav_sha256_file" ] && [ -s "$sig_cav_sha256_file" ]; then
+				command cp "$sig_cav_sha256_file" "$runtime_hsb"
+			else
+				: > "$runtime_hsb"
+			fi
+			if [ -s "$runtime_hsb" ]; then
+				ln -fs "$runtime_hsb" "$sigdir/lmd.user.hsb" 2>/dev/null
+			fi
+		fi
+	fi
+	# ClamAV sig deployment: link when enabled, clean when disabled
+	if [ "$scan_clamscan" == "1" ]; then
+		# Copy sigs to ClamAV dirs AFTER runtime user sigs are populated;
+		# empty lmd.user.* files cause ClamAV "Malformed database" errors
+		for _cpath in $clamav_paths; do
+			clamav_linksigs "$_cpath" "scan"
+		done
+	else
+		clamav_unlinksigs
+	fi
+
+	# Apply ignore_sigs filtering to runtime copies (non-destructive)
+	if [ -f "$ignore_sigs" ]; then
+		local _ign_count
+		_ign_count=$($wc -l < "$ignore_sigs")
+		if [ "$_ign_count" != "0" ]; then
+			_filter_sigs_inplace "$runtime_hexstrings"
+			_filter_sigs_inplace "$runtime_md5"
+			[ -n "$runtime_sha256" ] && _filter_sigs_inplace "$runtime_sha256"
+			if [ "$_silent" == "1" ] || [ "$hscan" == "1" ]; then
+				eout "{glob} processed $_ign_count signature ignore entries"
+			else
+				eout "{glob} processed $_ign_count signature ignore entries" 1
+			fi
+		fi
+	fi
+
+	# Build native hex scanner lookup files from runtime_hexstrings.
+	# Format of runtime_hexstrings: HEXPATTERN:{HEX}sig.name.N (colon-delimited)
+	runtime_hex_literal=$(mktemp "$tmpdir/.runtime.hex_literal.$scanid.XXXXXX")
+	runtime_hex_regex=$(mktemp "$tmpdir/.runtime.hex_regex.$scanid.XXXXXX")
+	runtime_hex_sigmap=$(mktemp "$tmpdir/.runtime.hex_sigmap.$scanid.XXXXXX")
+	# Phase 1: Single awk pass — split, build sigmap, classify literal vs wildcard.
+	# Wildcard detection: ??, (alt|alt), *, nibble ?x/x?, {N-M} bounded gap.
+	# Matches the same wildcard detection regex as _hex_compile_wildcards_awk().
+	local _hex_wc_tmp
+	_hex_wc_tmp=$(mktemp "$tmpdir/.hex_wc_tmp.XXXXXX")
+	awk -F: -v sigmap="$runtime_hex_sigmap" \
+		-v litfile="$runtime_hex_literal" \
+		-v wcfile="$_hex_wc_tmp" '
+	{
+		if (NF < 2 || $0 == "") next
+		pat = $1
+		# Rejoin fields 2..NF for sig name (name contains {HEX} prefix)
+		name = $2
+		for (i = 3; i <= NF; i++) name = name ":" $i
+		# Sigmap: all patterns
+		print pat "\t" name >> sigmap
+		# Wildcard detection (ClamAV tokens)
+		if (pat ~ /\?\?|\([^)]*\|[^)]*\)|\*|[?][0-9a-f]|[0-9a-f][?]|\{[0-9]+-[0-9]+\}/)
+			print pat "\t" name >> wcfile
+		else
+			print pat >> litfile
+	}' "$runtime_hexstrings"
+	# Phase 2: Compile wildcards to ERE (single awk pass, replaces per-pattern bash+sed loop).
+	_hex_compile_wildcards_awk
+	command rm -f "$_hex_wc_tmp"
+
+	# Build compound signature (csig) runtime files
+	runtime_csig_batch_compiled=""
+	runtime_csig_literals=""
+	runtime_csig_wildcards=""
+	runtime_csig_universals=""
+	runtime_csig_count=0
+	_gensigs_csig_done=1  # flag: csig compilation attempted (prevents re-trigger loop)
+	if [ "$scan_csig" == "1" ]; then
+		local _runtime_csig
+		_runtime_csig=$(mktemp "$tmpdir/.runtime.csig.$scanid.XXXXXX")
+		if [ -f "$sig_csig_file" ] && [ -s "$sig_csig_file" ]; then
+			if [ -f "$sig_user_csig_file" ] && [ -s "$sig_user_csig_file" ]; then
+				grep -h -vE '^\s*$' "$sig_csig_file" "$sig_user_csig_file" > "$_runtime_csig"
+			else
+				cat "$sig_csig_file" > "$_runtime_csig"
+			fi
+		elif [ -f "$sig_user_csig_file" ] && [ -s "$sig_user_csig_file" ]; then
+			grep -vE '^\s*$' "$sig_user_csig_file" > "$_runtime_csig"
+		else
+			: > "$_runtime_csig"
+		fi
+		# Apply ignore_sigs filtering to csig
+		[ -f "$ignore_sigs" ] && _filter_sigs_inplace "$_runtime_csig"
+		if [ -s "$_runtime_csig" ]; then
+			runtime_csig_batch_compiled=$(mktemp "$tmpdir/.runtime.csig_batch_compiled.$scanid.XXXXXX")
+			runtime_csig_literals=$(mktemp "$tmpdir/.runtime.csig_literals.$scanid.XXXXXX")
+			runtime_csig_wildcards=$(mktemp "$tmpdir/.runtime.csig_wildcards.$scanid.XXXXXX")
+			runtime_csig_universals=$(mktemp "$tmpdir/.runtime.csig_universals.$scanid.XXXXXX")
+			_csig_compile_rules "$_runtime_csig"
+		fi
+		command rm -f "$_runtime_csig"
+	fi
+}

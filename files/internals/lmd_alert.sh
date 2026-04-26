@@ -1,0 +1,1964 @@
+#!/usr/bin/env bash
+#
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+#
+# This file is sourced by maldet after the shared alert_lib.sh.
+# It provides LMD-specific alert functions: data preparation, rendering
+# pipeline, and wrappers for the shared library's delivery API.
+
+# Source guard — prevent double-sourcing
+[[ -n "${_LMD_ALERT_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_ALERT_LOADED=1
+
+# Data Preparation
+
+# _lmd_parse_hitlist hitlist_file — parse hit list to 6-field tab-delimited manifest on stdout
+_lmd_parse_hitlist() {
+	local hitlist_file="$1"
+	if [ ! -f "$hitlist_file" ] || [ ! -s "$hitlist_file" ]; then
+		return 1
+	fi
+	# Detect TSV format (with or without header) and convert to 6-field manifest.
+	# Header format: first line starts with "#LMD:v1".
+	# Headerless TSV (e.g., tlog_read output from monitor digest): first non-empty
+	# line has 11 tab-delimited fields (10 tab chars).
+	local _first_line _is_tsv=0
+	IFS= read -r _first_line < "$hitlist_file"
+	case "$_first_line" in
+		"#LMD:v1"*) _is_tsv=1 ;;
+		*)
+			# Detect headerless TSV: count tabs in first line (11 fields = 10 tabs)
+			local _tab_count
+			_tab_count="${_first_line//[^	]/}"
+			if [ "${#_tab_count}" -ge 10 ]; then
+				_is_tsv=1
+			fi
+			;;
+	esac
+	if [ "$_is_tsv" = "1" ]; then
+		# TSV format: extract fields and map to 6-field manifest
+		awk -F'\t' '
+		BEGIN {
+			ht_color["MD5"]  = "#0891b2"; ht_color["HEX"]  = "#dc2626"
+			ht_color["YARA"] = "#d97706"; ht_color["SA"]   = "#16a34a"
+			ht_color["CAV"]  = "#7c3aed"; ht_color["CSIG"] = "#ea580c"
+			ht_color["SHA256"] = "#0d9488"; default_color = "#0891b2"
+		}
+		!/^#/ {
+			sig=$1; fp=$2; qp=$3; ht=$4; htl=$5
+			if (sig == "") next
+			if (qp == "-") qp = ""
+			color = (ht in ht_color) ? ht_color[ht] : default_color
+			printf "%s\t%s\t%s\t%s\t%s\t%s\n", sig, fp, (qp=="" ? "-" : qp), ht, color, htl
+		}' "$hitlist_file"
+		return
+	fi
+	# Legacy format: "sig : path" or "sig : path => quarpath"
+	awk -F' : ' '
+	BEGIN {
+		# Hit type registry: type key -> display color and label
+		ht_color["MD5"]  = "#0891b2"; ht_label["MD5"]  = "MD5 Hash"
+		ht_color["HEX"]  = "#dc2626"; ht_label["HEX"]  = "HEX Pattern"
+		ht_color["YARA"] = "#d97706"; ht_label["YARA"] = "YARA Rule"
+		ht_color["SA"]   = "#16a34a"; ht_label["SA"]   = "String Analysis"
+		ht_color["CAV"]  = "#7c3aed"; ht_label["CAV"]  = "ClamAV"
+		ht_color["CSIG"] = "#ea580c"; ht_label["CSIG"] = "Compound Sig"
+		ht_color["SHA256"] = "#0d9488"; ht_label["SHA256"] = "SHA-256 Hash"
+		default_color = "#0891b2"
+	}
+	{
+		sig = $1
+		rest = $2
+		# Sanitize bash 4.x artifact: {TYPE\} → {TYPE} (pre-4d914a3 session data)
+		if (sig ~ /^\{[A-Z][A-Z0-9]*\\\}/) {
+			sub(/\\\}/, "}", sig)
+		}
+		hit_type = ""
+		if (match(sig, /^\{[A-Z][A-Z0-9]*\}/)) {
+			hit_type = substr(sig, 2, RLENGTH - 2)
+		}
+		# Split rest into filepath and quarpath on " => "
+		quarpath = ""
+		filepath = rest
+		idx = index(rest, " => ")
+		if (idx > 0) {
+			filepath = substr(rest, 1, idx - 1)
+			quarpath = substr(rest, idx + 4)
+		}
+		# Trim whitespace
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", sig)
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", filepath)
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", quarpath)
+		if (filepath != "") {
+			# Use "-" sentinel for empty quarpath to prevent IFS tab-collapsing
+			# in bash read; consecutive tabs (\t\t) are collapsed by read,
+			# shifting hit_type into quarpath field
+			if (quarpath == "") quarpath = "-"
+			color = (hit_type in ht_color) ? ht_color[hit_type] : default_color
+			label = (hit_type in ht_label) ? ht_label[hit_type] : hit_type
+			printf "%s\t%s\t%s\t%s\t%s\t%s\n", sig, filepath, quarpath, hit_type, color, label
+		}
+	}' "$hitlist_file"
+}
+
+# _lmd_set_global_vars alert_type — export global template variables to ENVIRON
+# shellcheck disable=SC2154
+_lmd_set_global_vars() {
+	local alert_type="$1"
+
+	export HOSTNAME; HOSTNAME=$(hostname)
+	export TIMESTAMP; TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+	export TIMESTAMP_ISO; TIMESTAMP_ISO=$(date +"%Y-%m-%dT%H:%M:%S%z")
+	export TIME_ZONE; TIME_ZONE=$(date +"%z")
+	export LMD_VERSION="${lmd_version:-}"
+	export ALERT_TYPE="$alert_type"
+
+	# Scan metadata
+	export SCAN_ID="${scanid:-}"
+	export SCAN_STARTED="${scan_start_hr:-}"
+	export SCAN_COMPLETED="${scan_end_hr:-}"
+	export SCAN_ELAPSED="${scan_et:-}"
+	export FILELIST_ELAPSED="${file_list_et:-}"
+	export SCAN_PATH="${hrspath:-}"
+	export SCAN_RANGE="${days:-}"
+	export TOTAL_FILES="${tot_files:-0}"
+	export TOTAL_HITS="${tot_hits:-0}"
+	export TOTAL_CLEANED="${tot_cl:-0}"
+
+	# Quarantine annotation — "(quarantine disabled)" when quarantine_hits=0, empty otherwise
+	export SUMMARY_QUARANTINE_ANNOTATION=""
+	if [ "${quarantine_hits:-0}" = "0" ]; then
+		SUMMARY_QUARANTINE_ANNOTATION=" (quarantine disabled)"
+	fi
+
+	# Conditional: quarantine warning
+	export QUARANTINE_WARNING_TEXT=""
+	export QUARANTINE_WARNING_HTML=""
+	if [ "${quarantine_hits:-0}" = "0" ] && [ "${tot_hits:-0}" != "0" ]; then
+		QUARANTINE_WARNING_TEXT="WARNING: Automatic quarantine is currently disabled, detected threats are still accessible to users!
+To enable, set quarantine_hits=1 and/or to quarantine hits from this scan run:
+/usr/local/sbin/maldet -q ${scanid:-}
+"
+		QUARANTINE_WARNING_HTML="<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"margin-bottom:16px;background-color:#fefce8;border:1px solid #fde68a;border-radius:8px;overflow:hidden;\">
+<tr><td style=\"background-color:#d97706;height:3px;font-size:0;line-height:0;\">&nbsp;</td></tr>
+<tr><td style=\"padding:12px 16px;color:#92400e;font-size:13px;\">
+<strong>Warning:</strong> Automatic quarantine is disabled. Detected threats are still accessible to users.<br>
+To enable, set <code style=\"font-family:'Courier New',Courier,monospace;font-size:12px;\">quarantine_hits=1</code> or quarantine this scan: <code style=\"font-family:'Courier New',Courier,monospace;font-size:12px;\">maldet -q ${scanid:-}</code>
+</td></tr></table>"
+	fi
+
+	# Conditional: cleaned section
+	export CLEANED_SECTION_TEXT=""
+	export CLEANED_SECTION_HTML=""
+	if [ "${quarantine_clean:-0}" = "1" ]; then
+		local _clist=""
+		if [ "$alert_type" = "scan" ] && [ -s "${sessdir:-}/clean.$$" ]; then
+			_clist="${sessdir}/clean.$$"
+		elif [ "$alert_type" = "digest" ] && [ -f "${tmpdir:-}/.digest.clean.hits" ] && [ "${tot_cl:-0}" != "0" ]; then
+			_clist="${tmpdir}/.digest.clean.hits"
+		fi
+		if [ -f "$_clist" ]; then
+			CLEANED_SECTION_TEXT="CLEANED & RESTORED FILES:
+$(cat "$_clist")
+"
+			local _clist_html
+			_clist_html=$(_alert_html_escape "$(cat "$_clist")")
+			CLEANED_SECTION_HTML="<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"margin-bottom:12px;\">
+<tr><td style=\"color:#71717a;font-size:12px;text-transform:uppercase;letter-spacing:1px;padding-bottom:6px;\">Cleaned &amp; Restored Files</td></tr>
+<tr><td style=\"font-family:'Courier New',Courier,monospace;font-size:12px;color:#09090b;background-color:#f4f4f5;padding:8px 12px;border-radius:4px;border:1px solid #d4d4d8;word-break:break-all;\">${_clist_html//$'\n'/<br>}</td></tr></table>"
+		fi
+	fi
+
+	# Conditional: suspended section
+	export SUSPENDED_SECTION_TEXT=""
+	export SUSPENDED_SECTION_HTML=""
+	if [ "${quarantine_suspend_user:-0}" = "1" ]; then
+		local _slist=""
+		if [ -s "${sessdir:-}/suspend.users.$$" ]; then
+			_slist="${sessdir}/suspend.users.$$"
+		elif [ "$alert_type" = "digest" ] && [ -f "${tmpdir:-}/.digest.susp.hits" ] && [ "${tot_susp:-0}" != "0" ]; then
+			_slist="${tmpdir}/.digest.susp.hits"
+		fi
+		if [ -f "$_slist" ]; then
+			SUSPENDED_SECTION_TEXT="SUSPENDED ACCOUNTS:
+$(cat "$_slist")
+"
+			local _slist_html
+			_slist_html=$(_alert_html_escape "$(cat "$_slist")")
+			SUSPENDED_SECTION_HTML="<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"margin-bottom:12px;\">
+<tr><td style=\"color:#71717a;font-size:12px;text-transform:uppercase;letter-spacing:1px;padding-bottom:6px;\">Suspended Accounts</td></tr>
+<tr><td style=\"font-family:'Courier New',Courier,monospace;font-size:12px;color:#09090b;background-color:#f4f4f5;padding:8px 12px;border-radius:4px;border:1px solid #d4d4d8;\">${_slist_html//$'\n'/<br>}</td></tr></table>"
+		fi
+	fi
+
+	# Conditional: hook section (populated by _digest_set_hook_section_vars;
+	# initialize to empty if not already set to prevent stale template tokens)
+	export HOOK_SECTION_TEXT="${HOOK_SECTION_TEXT:-}"
+	export HOOK_SECTION_HTML="${HOOK_SECTION_HTML:-}"
+	export HOOK_TOTAL_HITS="${HOOK_TOTAL_HITS:-0}"
+	export HOOK_MODE_BREAKDOWN="${HOOK_MODE_BREAKDOWN:-}"
+
+	# Digest-specific
+	export MONITOR_RUNTIME="${inotify_run_time:-}"
+	export TOTAL_SCANNED="${tot_files:-0}"
+
+	# Panel-specific (set by caller before invoking render)
+	export PANEL_USER="${sys_user:-}"
+	export USER_TOTAL_HITS="${user_tot_hits:-0}"
+	export USER_TOTAL_CLEANED="${user_tot_cl:-0}"
+}
+
+# _lmd_compute_summary manifest_file — compute SUMMARY_* vars from manifest (zero-default on empty)
+_lmd_compute_summary() {
+	local manifest_file="$1"
+	if [ ! -f "$manifest_file" ] || [ ! -s "$manifest_file" ]; then
+		export SUMMARY_TOTAL_HITS="0"
+		export SUMMARY_TOTAL_QUARANTINED="0"
+		export SUMMARY_BY_TYPE=""
+		export SUMMARY_BY_TYPE_HTML=""
+		export SUMMARY_QUARANTINE_STATUS=""
+		export SUMMARY_TOTAL_CLEANED="${tot_cl:-0}"
+		return 0
+	fi
+
+	local _summary
+	_summary=$(awk -F'\t' '
+	/^#/ { next }
+	{
+		total++
+		type = $4
+		if (type != "") types[type]++
+		if ($3 != "" && $3 != "-") quarantined++
+	}
+	END {
+		# Build type breakdown
+		by_type = ""
+		by_type_html = ""
+		for (t in types) {
+			if (by_type != "") { by_type = by_type ", "; by_type_html = by_type_html " " }
+			by_type = by_type t "(" types[t] ")"
+			by_type_html = by_type_html t "(" types[t] ")"
+		}
+		# Quarantine status
+		if (quarantined == total && total > 0) {
+			qstatus = "All threats quarantined"
+		} else if (quarantined > 0) {
+			qstatus = quarantined " of " total " quarantined"
+		} else {
+			qstatus = "None quarantined"
+		}
+		printf "%d\n%d\n%s\n%s\n%s\n", total, quarantined, by_type, by_type_html, qstatus
+	}' "$manifest_file")
+
+	local _line=0
+	while IFS= read -r _val; do
+		case $_line in
+			0) export SUMMARY_TOTAL_HITS="$_val" ;;
+			1) export SUMMARY_TOTAL_QUARANTINED="$_val" ;;
+			2) export SUMMARY_BY_TYPE="$_val" ;;
+			3) export SUMMARY_BY_TYPE_HTML="$_val" ;;
+			4) export SUMMARY_QUARANTINE_STATUS="$_val" ;;
+		esac
+		_line=$((_line + 1))
+	done <<< "$_summary"
+	export SUMMARY_TOTAL_CLEANED="${tot_cl:-0}"
+}
+
+# _lmd_elk_post_hits tsv_file — post 11-field TSV hit records to configured ELK endpoint
+# shellcheck disable=SC2154
+_lmd_elk_post_hits() {
+	local manifest_file="$1"
+	if [ "${enable_statistic:-0}" != "1" ] || [ -z "${elk_host:-}" ] || \
+	   [ -z "${elk_port:-}" ] || [ -z "${curl:-}" ]; then
+		return 0
+	fi
+	if [ ! -f "$manifest_file" ] || [ ! -s "$manifest_file" ]; then
+		return 0
+	fi
+
+	local elk_url="${elk_host}:${elk_port}"
+	# Guard: prepend http:// if no scheme present — bare host:port URLs
+	# cause curl to silently fail (e.g., elk_host="192.168.1.1")
+	local _scheme_pat='^https?://'
+	if ! [[ "$elk_url" =~ $_scheme_pat ]]; then
+		eout "{elk} WARNING: elk_host missing URL scheme, prepending http://"
+		elk_url="http://${elk_url}"
+	fi
+	if [ -n "${elk_index:-}" ]; then
+		elk_url="${elk_url}/${elk_index}/message"
+	fi
+	local elk_date elk_hostname
+	elk_date=$(date +%s)
+	elk_hostname=$(hostname)
+
+	local _sig _filepath _quarpath _hit_type _htlabel _hash _size _owner _group _mode _mtime
+	while IFS=$'\t' read -r _sig _filepath _quarpath _hit_type _htlabel _hash _size _owner _group _mode _mtime; do
+		[ -z "$_sig" ] && continue
+		[[ "$_sig" == "#"* ]] && continue  # skip header
+		[ "$_quarpath" = "-" ] && _quarpath=""
+		_sig=$(_json_escape_string "$_sig")
+		_filepath=$(_json_escape_string "$_filepath")
+		_hash=$(_json_escape_string "${_hash:--}")
+		$curl --output /dev/null --silent --show-error \
+			-XPOST "$elk_url" \
+			-H 'Content-Type: application/json' \
+			-d "{\"date\":\"$elk_date\",\"hit\":\"$_sig\",\"file\":\"$_filepath\",\"hostname\":\"$elk_hostname\",\"hash\":\"$_hash\",\"size\":\"${_size:--}\",\"owner\":\"${_owner:--}\"}"
+	done < "$manifest_file"
+}
+
+# _lmd_render_entries template_file manifest_file total — single-pass awk {{TOKEN}} substitution
+# Accepts 11-field TSV or 6-field manifest (auto-detected by field count)
+_lmd_render_entries() {
+	local template_file="$1" manifest_file="$2" total="$3"
+	if [ ! -f "$template_file" ] || [ ! -f "$manifest_file" ]; then
+		return 0
+	fi
+	awk -F'\t' -v total="$total" -v SQ="'" '
+	function html_escape(s) {
+		gsub(/&/, "\\&amp;", s)
+		gsub(/</, "\\&lt;", s)
+		gsub(/>/, "\\&gt;", s)
+		gsub(/"/, "\\&quot;", s)
+		gsub(SQ, "\\&#39;", s)
+		return s
+	}
+	function json_escape(s,    out, i, c, n) {
+		out = ""
+		n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\"") out = out "\\\""
+			else if (c == "\n") out = out "\\n"
+			else if (c == "\t") out = out "\\t"
+			else if (c == "\r") out = out "\\r"
+			else out = out c
+		}
+		return out
+	}
+	function sentinel(v) { return (v == "-" || v == "") ? "" : v }
+	BEGIN {
+		# Hit type -> color registry (used for 11-field TSV path where
+		# the color is not present in the data; relocated from _lmd_parse_hitlist)
+		ht_color["MD5"]    = "#0891b2"
+		ht_color["HEX"]    = "#dc2626"
+		ht_color["YARA"]   = "#d97706"
+		ht_color["SA"]     = "#16a34a"
+		ht_color["CAV"]    = "#7c3aed"
+		ht_color["CSIG"]   = "#ea580c"
+		ht_color["SHA256"] = "#0d9488"
+		default_color = "#0891b2"
+	}
+	NR == FNR {
+		tpl[FNR] = $0
+		tpl_lines = FNR
+		next
+	}
+	/^#/ { next }
+	{
+		sig = $1; filepath = $2; quarpath = $3
+		if (sig == "") next
+		if (quarpath == "-") quarpath = ""
+
+		# Field-count detection: 11-field TSV vs 6-field manifest
+		if (NF >= 11) {
+			# 11-field TSV: sig, filepath, quarpath, hit_type, hit_type_label,
+			#   file_hash, file_size, file_owner, file_group, file_mode, file_mtime
+			hit_type = $4
+			hit_type_label = $5
+			hit_type_color = (hit_type in ht_color) ? ht_color[hit_type] : default_color
+			file_hash  = sentinel($6)
+			file_size  = sentinel($7)
+			file_owner = sentinel($8)
+			file_group = sentinel($9)
+			file_mode  = sentinel($10)
+			file_mtime = sentinel($11)
+		} else {
+			# 6-field manifest: sig, filepath, quarpath, hit_type, hit_type_color, hit_type_label
+			hit_type = $4
+			hit_type_color = $5
+			hit_type_label = $6
+			file_hash  = ""
+			file_size  = ""
+			file_owner = ""
+			file_group = ""
+			file_mode  = ""
+			file_mtime = ""
+		}
+		n++
+
+		# Per-entry token map
+		tokens["ENTRY_NUM"] = n
+		tokens["ENTRY_TOTAL"] = total
+		tokens["HIT_SIGNATURE"] = sig
+		tokens["HIT_FILE"] = filepath
+		tokens["HIT_TYPE"] = hit_type
+		tokens["HIT_TYPE_LABEL"] = hit_type_label
+		tokens["HIT_TYPE_COLOR"] = hit_type_color
+		if (quarpath != "") {
+			tokens["QUARANTINE_STATUS"] = "Quarantined"
+			tokens["QUARANTINE_ENTRY_TEXT"] = " => " quarpath
+			tokens["QUARANTINE_STATUS_HTML"] = "<span style=\"color:#16a34a;\">&#x2713; Quarantined</span>"
+		} else {
+			tokens["QUARANTINE_STATUS"] = "Not quarantined"
+			tokens["QUARANTINE_ENTRY_TEXT"] = ""
+			tokens["QUARANTINE_STATUS_HTML"] = "<span style=\"color:#dc2626;\">&#x2717; Not quarantined</span>"
+		}
+		tokens["HIT_FILE_HTML"] = html_escape(filepath)
+		tokens["HIT_SIGNATURE_HTML"] = html_escape(sig)
+		tokens["HIT_FILE_JSON"] = json_escape(filepath)
+		tokens["HIT_SIGNATURE_JSON"] = json_escape(sig)
+
+		# Enriched tokens from 11-field TSV (empty string when 6-field)
+		tokens["HIT_HASH"]  = file_hash
+		tokens["HIT_SIZE"]  = file_size
+		tokens["HIT_OWNER"] = file_owner
+		tokens["HIT_GROUP"] = file_group
+		tokens["HIT_MODE"]  = file_mode
+		tokens["HIT_MTIME"] = file_mtime
+
+		# Render template with token substitution
+		for (i = 1; i <= tpl_lines; i++) {
+			line = tpl[i]
+			while (match(line, /\{\{[A-Z_][A-Z0-9_]*\}\}/)) {
+				token = substr(line, RSTART + 2, RLENGTH - 4)
+				if (token in tokens) {
+					val = tokens[token]
+				} else {
+					val = ENVIRON[token]
+				}
+				line = substr(line, 1, RSTART - 1) val substr(line, RSTART + RLENGTH)
+			}
+			print line
+		}
+	}
+	' "$template_file" "$manifest_file"
+}
+
+# _lmd_render_json tsv_file — render JSON report from TSV session file to stdout
+# Reads 19-field header + 11-field hit records. Outputs JSON schema 1.2.
+# mawk-compatible: no gensub, match(s,p,arr), strftime — epochs computed in bash
+# via `command date -d` and passed to awk via -v.
+_lmd_render_json() {
+	local tsv_file="$1"
+	[ -f "$tsv_file" ] || return 1
+	# Pre-pass: read TSV header line 1 in bash so we can compute epochs
+	# (mawk lacks mktime). The same 19-field header is re-parsed inside awk
+	# below — duplication is intentional and cheap (one already-cached line).
+	local _hdr_fmt _hdr_alert _hdr_scanid _hdr_hostname _hdr_path _hdr_days
+	local _hdr_started_hr _hdr_completed_hr _hdr_elapsed _hdr_filelist_et
+	local _hdr_total_files _hdr_total_hits _hdr_total_cleaned
+	local _hdr_scanner_ver _hdr_sig_ver _hdr_hashtype _hdr_engine _hdr_quar _hdr_hostid
+	IFS=$'\t' read -r _hdr_fmt _hdr_alert _hdr_scanid _hdr_hostname _hdr_path _hdr_days \
+		_hdr_started_hr _hdr_completed_hr _hdr_elapsed _hdr_filelist_et \
+		_hdr_total_files _hdr_total_hits _hdr_total_cleaned \
+		_hdr_scanner_ver _hdr_sig_ver _hdr_hashtype _hdr_engine _hdr_quar _hdr_hostid \
+		< "$tsv_file"
+	local _started_ep _completed_ep
+	_started_ep=$(command date -d "$_hdr_started_hr" "+%s" 2>/dev/null) || _started_ep=0  # safe: unparseable date → 0 → null in awk END block
+	_completed_ep=$(command date -d "$_hdr_completed_hr" "+%s" 2>/dev/null) || _completed_ep=0  # safe: same fallback
+	awk -F'\t' \
+		-v started_ep="$_started_ep" \
+		-v completed_ep="$_completed_ep" \
+	'
+	function json_esc(s,    out, i, c, n) {
+		out = ""
+		n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\"") out = out "\\\""
+			else if (c == "\n") out = out "\\n"
+			else if (c == "\t") out = out "\\t"
+			else if (c == "\r") out = out "\\r"
+			else out = out c
+		}
+		return out
+	}
+	function jbool(v) { return (v == "1") ? "true" : "false" }
+	function jnum_or_null(v) { return (v == "-" || v == "") ? "null" : v+0 }
+	function jstr_or_null(v) { return (v == "-" || v == "") ? "null" : "\"" json_esc(v) "\"" }
+	BEGIN {
+		ht_label["MD5"]    = "MD5 Hash"
+		ht_label["HEX"]    = "HEX Pattern"
+		ht_label["YARA"]   = "YARA Rule"
+		ht_label["SA"]     = "String Analysis"
+		ht_label["CAV"]    = "ClamAV"
+		ht_label["CSIG"]   = "Compound Sig"
+		ht_label["SHA256"] = "SHA-256 Hash"
+	}
+	NR == 1 && /^#/ {
+		# Parse 19-field header (same as before — END block consumes these)
+		fmt=$1; alert_type=$2; scan_id=$3; hostname=$4; path=$5; range=$6
+		started=$7; completed=$8; elapsed=$9; filelist=$10
+		total_files=$11; total_hits=$12; total_cleaned=$13
+		scanner_ver=$14; sig_ver=$15; hashtype=$16; engine=$17
+		quar_enabled=$18; host_id=$19
+		next
+	}
+	/^#/ { next }
+	{
+		# Parse 11-field hit records (unchanged)
+		hit_n++
+		sig[hit_n]=$1; fp[hit_n]=$2; qp[hit_n]=$3
+		ht[hit_n]=$4; htl[hit_n]=$5; hash[hit_n]=$6
+		sz[hit_n]=$7; own[hit_n]=$8; grp[hit_n]=$9
+		mode[hit_n]=$10; mtime[hit_n]=$11
+		if ($3 != "-" && $3 != "") quarantined++
+		types[$4]++
+	}
+	END {
+		printf "{\n"
+		printf "  \"schema_version\": \"1.2\",\n"
+		printf "  \"scanner\": {\n"
+		printf "    \"name\": \"Linux Malware Detect\",\n"
+		printf "    \"version\": %s,\n", jstr_or_null(scanner_ver)
+		printf "    \"engine\": %s,\n", jstr_or_null(engine)
+		printf "    \"hash_type\": %s,\n", jstr_or_null(hashtype)
+		printf "    \"sig_version\": %s\n", jstr_or_null(sig_ver)
+		printf "  },\n"
+		printf "  \"host\": {\n"
+		printf "    \"hostname\": %s,\n", jstr_or_null(hostname)
+		printf "    \"host_id\": %s\n", jstr_or_null(host_id)
+		printf "  },\n"
+		printf "  \"reports\": [\n"
+		printf "    {\n"
+		printf "      \"scan_id\": \"%s\",\n", json_esc(scan_id)
+		printf "      \"type\": \"%s\",\n", json_esc(alert_type)
+		printf "      \"path\": \"%s\",\n", json_esc(path)
+		if (range ~ /^[0-9]+$/) printf "      \"range_days\": %d,\n", range+0
+		else printf "      \"range_days\": %s,\n", jstr_or_null(range)
+		printf "      \"started\": %s,\n", jstr_or_null(started)
+		printf "      \"started_epoch\": %s,\n", (started_ep+0 == 0 ? "null" : started_ep)
+		printf "      \"completed\": %s,\n", jstr_or_null(completed)
+		printf "      \"completed_epoch\": %s,\n", (completed_ep+0 == 0 ? "null" : completed_ep)
+		printf "      \"elapsed_seconds\": %s,\n", jnum_or_null(elapsed)
+		printf "      \"filelist_seconds\": %s,\n", jnum_or_null(filelist)
+		printf "      \"total_files\": %s,\n", jnum_or_null(total_files)
+		printf "      \"total_hits\": %s,\n", jnum_or_null(total_hits)
+		printf "      \"total_cleaned\": %s,\n", jnum_or_null(total_cleaned)
+		printf "      \"total_quarantined\": %d,\n", quarantined+0
+		printf "      \"quarantine_enabled\": %s,\n", jbool(quar_enabled)
+		printf "      \"hits\": ["
+		for (i = 1; i <= hit_n; i++) {
+			if (i > 1) printf ","
+			printf "\n        {\n"
+			printf "          \"index\": %d,\n", i
+			printf "          \"signature\": \"%s\",\n", json_esc(sig[i])
+			printf "          \"file\": \"%s\",\n", json_esc(fp[i])
+			printf "          \"hit_type\": \"%s\",\n", json_esc(ht[i])
+			hl = (ht[i] in ht_label) ? ht_label[ht[i]] : ht[i]
+			printf "          \"hit_type_label\": \"%s\",\n", json_esc(hl)
+			is_q = (qp[i] != "-" && qp[i] != "")
+			printf "          \"quarantined\": %s,\n", (is_q ? "true" : "false")
+			if (is_q) printf "          \"quarantine_path\": \"%s\",\n", json_esc(qp[i])
+			printf "          \"hash\": %s,\n", jstr_or_null(hash[i])
+			printf "          \"size\": %s,\n", jnum_or_null(sz[i])
+			printf "          \"owner\": %s,\n", jstr_or_null(own[i])
+			printf "          \"group\": %s,\n", jstr_or_null(grp[i])
+			printf "          \"mode\": %s,\n", jstr_or_null(mode[i])
+			printf "          \"mtime\": %s\n", jnum_or_null(mtime[i])
+			printf "        }"
+		}
+		printf "\n      ],\n"
+		printf "      \"summary\": {\n"
+		printf "        \"total_hits\": %d,\n", hit_n+0
+		printf "        \"total_quarantined\": %d,\n", quarantined+0
+		printf "        \"total_cleaned\": %s,\n", jnum_or_null(total_cleaned)
+		if (quarantined == hit_n && hit_n > 0) qstat = "All threats quarantined"
+		else if (quarantined > 0) qstat = quarantined " of " hit_n " quarantined"
+		else qstat = "None quarantined"
+		printf "        \"quarantine_status\": \"%s\",\n", json_esc(qstat)
+		printf "        \"by_type\": {"
+		sep = ""
+		for (t in types) {
+			printf "%s\"%s\": %d", sep, json_esc(t), types[t]
+			sep = ", "
+		}
+		printf "}\n"
+		printf "      }\n"
+		printf "    }\n"
+		printf "  ]\n"
+		printf "}\n"
+	}' "$tsv_file"
+}
+
+# _lmd_render_json_legacy session_file hits_file — render schema 1.2 JSON from legacy plaintext session
+# Same top-level shape as _lmd_render_json() — fields not recoverable from
+# plaintext (host_id, scanner.engine/hash_type/version/sig_version, per-hit
+# hash/size/owner/group/mode/mtime) are emitted as literal JSON null.
+# shellcheck disable=SC2154
+_lmd_render_json_legacy() {
+	local _sess_file="$1" _hits_file="$2"
+	local _manifest
+	_manifest=$(mktemp "$tmpdir/.json_legacy_manifest.XXXXXX")
+	# Initialize metadata vars to empty (prevent stale leaks from prior calls)
+	scanid="" scan_start_hr="" scan_end_hr="" scan_et="" file_list_et=""
+	hrspath="" days="" tot_files="" tot_hits="" tot_cl="" _hostname=""
+	if [ -n "$_sess_file" ] && [ -f "$_sess_file" ]; then
+		_parse_session_metadata "$_sess_file"
+	fi
+	if [ -n "$_hits_file" ] && [ -f "$_hits_file" ] && [ -s "$_hits_file" ]; then
+		_lmd_parse_hitlist "$_hits_file" > "$_manifest"
+	fi
+	# Compute epochs in bash (mawk lacks mktime). Plaintext date strings may
+	# be unparseable on some locales — fallback to 0 → null in awk.
+	local _started_ep _completed_ep
+	_started_ep=$(command date -d "$scan_start_hr" "+%s" 2>/dev/null) || _started_ep=0  # safe: legacy plaintext date may be unparseable
+	_completed_ep=$(command date -d "$scan_end_hr" "+%s" 2>/dev/null) || _completed_ep=0  # safe: same fallback
+	# Render JSON via awk — schema 1.2 shape with null for fields unavailable
+	# in legacy plaintext format
+	awk -F'\t' \
+		-v scan_id="$scanid" \
+		-v hostname="${_hostname:-}" \
+		-v path="$hrspath" \
+		-v range="$days" \
+		-v started="$scan_start_hr" \
+		-v completed="$scan_end_hr" \
+		-v elapsed="$scan_et" \
+		-v filelist="$file_list_et" \
+		-v total_files="$tot_files" \
+		-v total_hits="$tot_hits" \
+		-v total_cleaned="$tot_cl" \
+		-v started_ep="$_started_ep" \
+		-v completed_ep="$_completed_ep" \
+	'
+	function json_esc(s,    out, i, c, n) {
+		out = ""
+		n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\"") out = out "\\\""
+			else if (c == "\n") out = out "\\n"
+			else if (c == "\t") out = out "\\t"
+			else if (c == "\r") out = out "\\r"
+			else out = out c
+		}
+		return out
+	}
+	function jnum_or_null(v) { return (v == "-" || v == "") ? "null" : v+0 }
+	function jstr_or_null(v) { return (v == "-" || v == "") ? "null" : "\"" json_esc(v) "\"" }
+	BEGIN {
+		ht_label["MD5"]    = "MD5 Hash"
+		ht_label["HEX"]    = "HEX Pattern"
+		ht_label["YARA"]   = "YARA Rule"
+		ht_label["SA"]     = "String Analysis"
+		ht_label["CAV"]    = "ClamAV"
+		ht_label["CSIG"]   = "Compound Sig"
+		ht_label["SHA256"] = "SHA-256 Hash"
+	}
+	{
+		# 6-field manifest: sig, filepath, quarpath, hit_type, color, label
+		hit_n++
+		sig[hit_n]=$1; fp[hit_n]=$2; qp[hit_n]=$3
+		ht[hit_n]=$4; htl[hit_n]=$6
+		if ($3 != "-" && $3 != "") quarantined++
+		types[$4]++
+	}
+	END {
+		printf "{\n"
+		printf "  \"schema_version\": \"1.2\",\n"
+		printf "  \"scanner\": {\n"
+		printf "    \"name\": \"Linux Malware Detect\",\n"
+		printf "    \"version\": null,\n"
+		printf "    \"engine\": null,\n"
+		printf "    \"hash_type\": null,\n"
+		printf "    \"sig_version\": null\n"
+		printf "  },\n"
+		printf "  \"host\": {\n"
+		printf "    \"hostname\": %s,\n", jstr_or_null(hostname)
+		printf "    \"host_id\": null\n"
+		printf "  },\n"
+		printf "  \"reports\": [\n"
+		printf "    {\n"
+		printf "      \"scan_id\": %s,\n", jstr_or_null(scan_id)
+		printf "      \"type\": \"scan\",\n"
+		printf "      \"path\": %s,\n", jstr_or_null(path)
+		if (range ~ /^[0-9]+$/) printf "      \"range_days\": %d,\n", range+0
+		else printf "      \"range_days\": %s,\n", jstr_or_null(range)
+		printf "      \"started\": %s,\n", jstr_or_null(started)
+		printf "      \"started_epoch\": %s,\n", (started_ep+0 == 0 ? "null" : started_ep)
+		printf "      \"completed\": %s,\n", jstr_or_null(completed)
+		printf "      \"completed_epoch\": %s,\n", (completed_ep+0 == 0 ? "null" : completed_ep)
+		printf "      \"elapsed_seconds\": %s,\n", jnum_or_null(elapsed)
+		printf "      \"filelist_seconds\": %s,\n", jnum_or_null(filelist)
+		printf "      \"total_files\": %s,\n", jnum_or_null(total_files)
+		printf "      \"total_hits\": %s,\n", jnum_or_null(total_hits)
+		printf "      \"total_cleaned\": %s,\n", jnum_or_null(total_cleaned)
+		printf "      \"total_quarantined\": null,\n"
+		printf "      \"quarantine_enabled\": null,\n"
+		printf "      \"hits\": ["
+		for (i = 1; i <= hit_n; i++) {
+			if (i > 1) printf ","
+			printf "\n        {\n"
+			printf "          \"index\": %d,\n", i
+			printf "          \"signature\": \"%s\",\n", json_esc(sig[i])
+			printf "          \"file\": \"%s\",\n", json_esc(fp[i])
+			printf "          \"hit_type\": \"%s\",\n", json_esc(ht[i])
+			hl = (ht[i] in ht_label) ? ht_label[ht[i]] : ht[i]
+			printf "          \"hit_type_label\": \"%s\",\n", json_esc(hl)
+			is_q = (qp[i] != "-" && qp[i] != "")
+			printf "          \"quarantined\": %s,\n", (is_q ? "true" : "false")
+			if (is_q) printf "          \"quarantine_path\": \"%s\",\n", json_esc(qp[i])
+			printf "          \"hash\": null,\n"
+			printf "          \"size\": null,\n"
+			printf "          \"owner\": null,\n"
+			printf "          \"group\": null,\n"
+			printf "          \"mode\": null,\n"
+			printf "          \"mtime\": null\n"
+			printf "        }"
+		}
+		printf "\n      ],\n"
+		printf "      \"summary\": {\n"
+		printf "        \"total_hits\": %d,\n", hit_n+0
+		printf "        \"total_quarantined\": %d,\n", quarantined+0
+		printf "        \"total_cleaned\": %s,\n", jnum_or_null(total_cleaned)
+		if (quarantined == hit_n && hit_n > 0) qstat = "All threats quarantined"
+		else if (quarantined > 0) qstat = quarantined " of " hit_n " quarantined"
+		else qstat = "None quarantined"
+		printf "        \"quarantine_status\": \"%s\",\n", json_esc(qstat)
+		printf "        \"by_type\": {"
+		sep = ""
+		for (t in types) {
+			printf "%s\"%s\": %d", sep, json_esc(t), types[t]
+			sep = ", "
+		}
+		printf "}\n"
+		printf "      },\n"
+		printf "      \"source\": \"legacy\"\n"
+		printf "    }\n"
+		printf "  ]\n"
+		printf "}\n"
+	}' "$_manifest"
+	command rm -f "$_manifest"
+}
+
+# _lmd_render_json_list — render all session reports as JSON array (index-first, legacy fallback)
+# shellcheck disable=SC2154
+_lmd_render_json_list() {
+	# Top-level scanner + host blocks mirror per-scan JSON schema (see
+	# _lmd_render_json at line 449). Single source of truth for invariants
+	# that consumers would otherwise duplicate per-entry.
+	local _jl_hostname _jl_hostid _jl_scanner_ver _jl_sigs_ver
+	_jl_hostname=$(hostname)
+	_jl_hostname=$(_json_escape_string "${_jl_hostname:--}")
+	_jl_hostid="${hostid:--}"
+	[ "$_jl_hostid" = "-" ] && _jl_hostid="null" || _jl_hostid="\"$_jl_hostid\""
+	_jl_scanner_ver="${lmd_version:--}"
+	[ "$_jl_scanner_ver" = "-" ] && _jl_scanner_ver="null" || _jl_scanner_ver="\"$_jl_scanner_ver\""
+	# Installed sig version (what this LMD would scan with if a new scan started
+	# now); per-entry sig_version remains the version active at that scan's time.
+	if [ -f "$sigdir/maldet.sigs.ver" ]; then
+		IFS= read -r _jl_sigs_ver < "$sigdir/maldet.sigs.ver"
+	fi
+	[ -z "${_jl_sigs_ver:-}" ] && _jl_sigs_ver="null" || _jl_sigs_ver="\"$_jl_sigs_ver\""
+	printf '{\n  "schema_version": "1.2",\n  "type": "report_list",\n'
+	printf '  "scanner": {"name": "Linux Malware Detect", "version": %s, "sig_version": %s},\n' \
+		"$_jl_scanner_ver" "$_jl_sigs_ver"
+	printf '  "host": {"hostname": "%s", "host_id": %s},\n' "$_jl_hostname" "$_jl_hostid"
+	printf '  "active": ['
+
+	# Enumerate active scans for the "active" array
+	local _first_active=1 _jl_meta_file _jl_scanid _jl_state
+	for _jl_meta_file in "$sessdir"/scan.meta.*; do
+		[ -f "$_jl_meta_file" ] || continue
+		_jl_scanid="${_jl_meta_file##*scan.meta.}"
+		case "$_jl_scanid" in *.tmp) continue ;; esac
+		_jl_state=$(_lifecycle_detect_state "$_jl_scanid" 2>/dev/null) || continue  # safe: skip unreadable meta
+		case "$_jl_state" in
+			running|paused|stale)
+				_lifecycle_read_meta "$_jl_scanid" || continue
+				[ "$_first_active" != "1" ] && printf ","
+				_first_active=0
+				local _jl_path _jl_engine _jl_sig _jl_hashtype
+				_jl_path=$(_json_escape_string "$_meta_path")
+				_jl_engine=$(_json_escape_string "${_meta_engine:--}")
+				_jl_sig=$(_json_escape_string "${_meta_sig_version:--}")
+				_jl_hashtype=$(_json_escape_string "${_meta_hashtype:--}")
+				local _jl_started_hr _jl_started_ep
+				_jl_started_hr=$(_json_escape_string "${_meta_started_hr:--}")
+				_jl_started_ep="${_meta_started:-0}"
+				[ "$_jl_started_ep" = "-" ] && _jl_started_ep=0
+				local _jl_pid="${_meta_pid:-0}"; [ "$_jl_pid" = "-" ] && _jl_pid=0
+				local _jl_ppid="${_meta_ppid:-0}"; [ "$_jl_ppid" = "-" ] && _jl_ppid=0
+				local _jl_files="${_meta_total_files:-0}"; [ "$_jl_files" = "-" ] && _jl_files=0
+				local _jl_hits="${_meta_hits:-0}"; [ "$_jl_hits" = "-" ] && _jl_hits=0
+				local _jl_elapsed="${_meta_elapsed:-0}"; [ "$_jl_elapsed" = "-" ] && _jl_elapsed=0
+				# Live elapsed for running scans (matches _lifecycle_render_json_active)
+				if [ "$_jl_elapsed" = "0" ] && [ -n "$_meta_started" ] && [ "$_meta_started" != "0" ]; then
+					_jl_elapsed="$(( $(command date +%s) - _meta_started ))"
+				fi
+				local _jl_workers="${_meta_workers:-0}"; [ "$_jl_workers" = "-" ] && _jl_workers=0
+				local _jl_prog_pos="${_meta_progress_pos:-0}"; [ "$_jl_prog_pos" = "-" ] && _jl_prog_pos=0
+				local _jl_prog_total="${_meta_progress_total:-0}"; [ "$_jl_prog_total" = "-" ] && _jl_prog_total=0
+				local _jl_eta _jl_quar_bool
+				_jl_eta=$(_lifecycle_compute_eta "${_meta_engine:-}" "$_jl_elapsed" "$_jl_prog_pos" "$_jl_prog_total")
+				# quarantine_enabled: boolean matching per-scan JSON jbool() convention
+				if [ "${_meta_quarantine_enabled:-0}" = "1" ]; then _jl_quar_bool="true"; else _jl_quar_bool="false"; fi
+				# total_cleaned/total_quarantined are post-scan actions; emit null to
+				# signal "not yet determined" (not zero, which implies "no action taken")
+				printf '\n    {"scan_id": "%s", "state": "%s", "pid": %s, "ppid": %s, "path": "%s", "started": "%s", "started_epoch": %s, "elapsed_seconds": %s, "engine": "%s", "hash_type": "%s", "workers": %s, "sig_version": "%s", "quarantine_enabled": %s, "total_files": %s, "total_hits": %s, "total_cleaned": null, "total_quarantined": null, "eta": %s, "progress": {"position": %s, "total": %s}}' \
+					"$_jl_scanid" "$_jl_state" "$_jl_pid" "$_jl_ppid" "$_jl_path" \
+					"$_jl_started_hr" "$_jl_started_ep" "$_jl_elapsed" \
+					"$_jl_engine" "$_jl_hashtype" "$_jl_workers" "$_jl_sig" "$_jl_quar_bool" \
+					"$_jl_files" "$_jl_hits" \
+					"$_jl_eta" "$_jl_prog_pos" "$_jl_prog_total"
+				;;
+		esac
+	done
+
+	printf '\n  ],\n  "stopped": ['
+
+	# Enumerate stopped scans with valid checkpoints (resumable)
+	local _first_stopped=1 _jl_stopped_meta _jl_stopped_sid _jl_stopped_state
+	for _jl_stopped_meta in "$sessdir"/scan.meta.*; do
+		[ -f "$_jl_stopped_meta" ] || continue
+		_jl_stopped_sid="${_jl_stopped_meta##*scan.meta.}"
+		case "$_jl_stopped_sid" in *.tmp) continue ;; esac
+		_jl_stopped_state=$(_lifecycle_detect_state "$_jl_stopped_sid" 2>/dev/null) || continue  # safe: skip unreadable
+		if [ "$_jl_stopped_state" = "stopped" ] && [ -f "$sessdir/scan.checkpoint.$_jl_stopped_sid" ]; then
+			_lifecycle_read_meta "$_jl_stopped_sid" || continue
+			[ "$_first_stopped" != "1" ] && printf ","
+			_first_stopped=0
+			local _jl_sp _jl_sstage _jl_shr _jl_shashtype _jl_sengine _jl_ssig
+			_jl_sp=$(_json_escape_string "$_meta_path")
+			_jl_sstage=$(_json_escape_string "${_meta_stage:--}")
+			_jl_shr=$(_json_escape_string "${_meta_stopped_hr:-unknown}")
+			_jl_shashtype=$(_json_escape_string "${_meta_hashtype:--}")
+			_jl_sengine=$(_json_escape_string "${_meta_engine:--}")
+			_jl_ssig=$(_json_escape_string "${_meta_sig_version:--}")
+			local _jl_sstarted_hr _jl_sstarted_ep _jl_sstopped_ep
+			_jl_sstarted_hr=$(_json_escape_string "${_meta_started_hr:--}")
+			_jl_sstarted_ep="${_meta_started:-0}"
+			[ "$_jl_sstarted_ep" = "-" ] && _jl_sstarted_ep=0
+			_jl_sstopped_ep="${_meta_stopped:-0}"
+			[ "$_jl_sstopped_ep" = "-" ] && _jl_sstopped_ep=0
+			local _jl_sppid="${_meta_ppid:-0}"; [ "$_jl_sppid" = "-" ] && _jl_sppid=0
+			local _jl_sfiles="${_meta_total_files:-0}"; [ "$_jl_sfiles" = "-" ] && _jl_sfiles=0
+			local _jl_shits="${_meta_hits:-0}"; [ "$_jl_shits" = "-" ] && _jl_shits=0
+			local _jl_selapsed="${_meta_elapsed:-0}"; [ "$_jl_selapsed" = "-" ] && _jl_selapsed=0
+			local _jl_sworkers="${_meta_workers:-0}"; [ "$_jl_sworkers" = "-" ] && _jl_sworkers=0
+			local _jl_squar_bool
+			if [ "${_meta_quarantine_enabled:-0}" = "1" ]; then _jl_squar_bool="true"; else _jl_squar_bool="false"; fi
+			printf '\n    {"scan_id": "%s", "stage": "%s", "ppid": %s, "path": "%s", "started": "%s", "started_epoch": %s, "stopped": "%s", "stopped_epoch": %s, "elapsed_seconds": %s, "engine": "%s", "hash_type": "%s", "workers": %s, "sig_version": "%s", "quarantine_enabled": %s, "total_files": %s, "total_hits": %s, "total_cleaned": null, "total_quarantined": null}' \
+				"$_jl_stopped_sid" "$_jl_sstage" "$_jl_sppid" "$_jl_sp" \
+				"$_jl_sstarted_hr" "$_jl_sstarted_ep" \
+				"$_jl_shr" "$_jl_sstopped_ep" "$_jl_selapsed" \
+				"$_jl_sengine" "$_jl_shashtype" "$_jl_sworkers" "$_jl_ssig" "$_jl_squar_bool" \
+				"$_jl_sfiles" "$_jl_shits"
+		fi
+	done
+
+	printf '\n  ],\n  "reports": ['
+	local _first=1
+	local _index_file="$sessdir/session.index"
+	# O(N) dedup between index and legacy passes; local -A is function-scoped
+	# (bash 4.0+) and does not leak. String concat + glob match was O(N²) and
+	# produced a visible hang on large indexes (~20K+ sessions).
+	local -A _seen_ids
+
+	# Buffer entries as "epoch\tJSON_LITERAL" then sort-desc for global
+	# ordering across index + legacy passes (see _view_session_list in
+	# lmd_session.sh:329-418 for the text-path precedent). Tab safe in
+	# sort key: _json_escape_var replaces real tabs in path with \t.
+	local _sortbuf
+	_sortbuf=$(mktemp "$tmpdir/.jsonlist.XXXXXX")
+
+	# Rebuild index from TSV files if missing (first call on upgraded server)
+	if [ ! -f "$_index_file" ]; then
+		_session_index_rebuild
+	fi
+
+	# Pass 1: read from session.index (covers all TSV sessions)
+	if [ -f "$_index_file" ]; then
+		local _ix_scanid _ix_epoch _ix_started_hr _ix_elapsed
+		local _ix_tot_files _ix_tot_hits _ix_tot_cl _ix_tot_quar _ix_path
+		local _ix_sig_version _ix_quar_enabled
+		local _ix_completed_hr _ix_engine _ix_hashtype
+		# Schema v1 = 9 fields; v1.1 appends sig_version + quarantine_enabled (10-11);
+		# v1.2 appends completed_hr + engine + hash_type (12-14).
+		# Missing trailing fields read as empty — handled per-field below.
+		while IFS=$'\t' read -r _ix_scanid _ix_epoch _ix_started_hr _ix_elapsed \
+				_ix_tot_files _ix_tot_hits _ix_tot_cl _ix_tot_quar _ix_path \
+				_ix_sig_version _ix_quar_enabled \
+				_ix_completed_hr _ix_engine _ix_hashtype; do
+			case "$_ix_scanid" in "#"*|"") continue ;; esac
+			# Backward compat: old 8-field index has path in field 8 (no quar field)
+			if [ -z "$_ix_path" ] && [ -n "$_ix_tot_quar" ]; then
+				_ix_path="$_ix_tot_quar"
+				_ix_tot_quar="0"
+			fi
+			_seen_ids["$_ix_scanid"]=1
+			# Normalize epoch for sort key and started_epoch field
+			local _ep="${_ix_epoch:-0}"
+			[ "$_ep" = "-" ] && _ep="0"
+			{
+				printf '%s\t{' "$_ep"
+				printf '"scan_id": "%s", ' "$_ix_scanid"
+				if [ -z "$_ix_path" ] || [ "$_ix_path" = "-" ]; then
+					printf '"path": null, '
+				else
+					# Out-param form avoids a subshell fork per report
+					_json_escape_var "$_ix_path"
+					printf '"path": "%s", ' "$_JSON_ESC_OUT"
+				fi
+				if [ "$_ix_started_hr" = "-" ]; then printf '"started": null, '
+				else printf '"started": "%s", ' "$_ix_started_hr"; fi
+				printf '"started_epoch": %s, ' "$_ep"
+				# completed_epoch derived from started_epoch + elapsed_seconds
+				# (null when either is unknown; avoids adding a field to session.index)
+				if [ "$_ix_elapsed" = "-" ] || [ -z "$_ix_elapsed" ] || [ "$_ep" = "0" ]; then
+					printf '"completed_epoch": null, '
+				else
+					printf '"completed_epoch": %s, ' "$((_ep + _ix_elapsed))"
+				fi
+				if [ "$_ix_elapsed" = "-" ]; then printf '"elapsed_seconds": null, '
+				else printf '"elapsed_seconds": %s, ' "$_ix_elapsed"; fi
+				# sig_version / quarantine_enabled — v1.1 fields; null when absent
+				# (pre-bump entries or rebuilds from TSVs lacking the data)
+				if [ -z "$_ix_sig_version" ] || [ "$_ix_sig_version" = "-" ]; then
+					printf '"sig_version": null, '
+				else
+					_json_escape_var "$_ix_sig_version"
+					printf '"sig_version": "%s", ' "$_JSON_ESC_OUT"
+				fi
+				if [ -z "$_ix_quar_enabled" ] || [ "$_ix_quar_enabled" = "-" ]; then
+					printf '"quarantine_enabled": null, '
+				elif [ "$_ix_quar_enabled" = "1" ]; then
+					printf '"quarantine_enabled": true, '
+				else
+					printf '"quarantine_enabled": false, '
+				fi
+				if [ "$_ix_tot_files" = "-" ]; then printf '"total_files": null, '
+				else printf '"total_files": %s, ' "$_ix_tot_files"; fi
+				if [ "$_ix_tot_hits" = "-" ]; then printf '"total_hits": null, '
+				else printf '"total_hits": %s, ' "$_ix_tot_hits"; fi
+				local _jval="${_ix_tot_cl:-0}"
+				[ "$_jval" = "-" ] && _jval="0"
+				printf '"total_cleaned": %s, ' "$_jval"
+				local _jquar="${_ix_tot_quar:-0}"
+				[ "$_jquar" = "-" ] && _jquar="0"
+				printf '"total_quarantined": %s, ' "$_jquar"
+				# v1.2 fields — completed, engine, hash_type
+				if [ -z "$_ix_completed_hr" ] || [ "$_ix_completed_hr" = "-" ]; then
+					printf '"completed": null, '
+				else
+					_json_escape_var "$_ix_completed_hr"
+					printf '"completed": "%s", ' "$_JSON_ESC_OUT"
+				fi
+				if [ -z "$_ix_engine" ] || [ "$_ix_engine" = "-" ]; then
+					printf '"engine": null, '
+				else
+					_json_escape_var "$_ix_engine"
+					printf '"engine": "%s", ' "$_JSON_ESC_OUT"
+				fi
+				if [ -z "$_ix_hashtype" ] || [ "$_ix_hashtype" = "-" ]; then
+					printf '"hash_type": null'
+				else
+					_json_escape_var "$_ix_hashtype"
+					printf '"hash_type": "%s"' "$_JSON_ESC_OUT"
+				fi
+				printf '}\n'
+			} >> "$_sortbuf"
+		done < "$_index_file"
+	fi
+
+	# Pass 2: legacy plaintext sessions not in the index
+	# (preserved for backward compat with pre-2.0.1 sessions)
+	local _file
+	for _file in "$sessdir"/session.[0-9]*; do
+		[ -f "$_file" ] || continue
+		case "$_file" in *.tsv.*|*.hits.*|*.html) continue ;; esac
+		local _sid="${_file##*session.}"
+		[ -n "${_seen_ids[$_sid]:-}" ] && continue  # skip if already in index
+		# Clear vars before parsing (prevent stale data from prior iteration)
+		scanid="" scan_start_hr="" scan_end_hr="" scan_et="" tot_files="" tot_hits="" tot_cl="" hrspath=""
+		_parse_session_metadata "$_file"
+		[ -z "$scanid" ] && continue
+		_seen_ids["$scanid"]=1
+		# Derive epoch from scan_start_hr; fall back to 0 on parse failure
+		# (matches _session_index_rebuild at lmd_lifecycle.sh:564). On FreeBSD,
+		# `date -d` is unsupported; the 2>/dev/null || fallback yields 0 and
+		# these entries sort to the end, preserving prior FreeBSD behavior.
+		local _leg_ep
+		_leg_ep=$(command date -d "$scan_start_hr" "+%s" 2>/dev/null) || _leg_ep=0  # safe: date parse failure sorts entry to end
+		[ -z "$_leg_ep" ] && _leg_ep=0
+		{
+			printf '%s\t{' "$_leg_ep"
+			printf '"scan_id": "%s", ' "$scanid"
+			if [ -z "$hrspath" ]; then
+				printf '"path": null, '
+			else
+				_json_escape_var "$hrspath"
+				printf '"path": "%s", ' "$_JSON_ESC_OUT"
+			fi
+			if [ -z "$scan_start_hr" ]; then printf '"started": null, '
+			else printf '"started": "%s", ' "$scan_start_hr"; fi
+			printf '"started_epoch": %s, ' "$_leg_ep"
+			# completed_epoch derived from started_epoch + scan_et (null when either missing)
+			if [ -z "$scan_et" ] || [ "$_leg_ep" = "0" ]; then
+				printf '"completed_epoch": null, '
+			else
+				printf '"completed_epoch": %s, ' "$((_leg_ep + scan_et))"
+			fi
+			if [ -z "$scan_et" ]; then printf '"elapsed_seconds": null, '
+			else printf '"elapsed_seconds": %s, ' "$scan_et"; fi
+			# sig_version / quarantine_enabled / completed / engine / hash_type
+			# not recoverable from plaintext session headers — legacy format
+			# predates all of them. Null is honest (NEVER "-" or empty string).
+			printf '"sig_version": null, '
+			printf '"quarantine_enabled": null, '
+			if [ -z "$tot_files" ]; then printf '"total_files": null, '
+			else printf '"total_files": %s, ' "$tot_files"; fi
+			if [ -z "$tot_hits" ]; then printf '"total_hits": null, '
+			else printf '"total_hits": %s, ' "$tot_hits"; fi
+			local _jval="${tot_cl:-0}"
+			[ -z "$_jval" ] && _jval="0"
+			printf '"total_cleaned": %s, ' "$_jval"
+			printf '"total_quarantined": null, '
+			printf '"completed": null, '
+			printf '"engine": null, '
+			printf '"hash_type": null, '
+			printf '"source": "legacy"'
+			printf '}\n'
+		} >> "$_sortbuf"
+	done
+
+	# Drain sorted buffer: newest-first (desc), mirrors text path preference
+	if [ -s "$_sortbuf" ]; then
+		local _e _jl
+		while IFS=$'\t' read -r _e _jl; do
+			if [ "$_first" != "1" ]; then printf ","; fi
+			_first=0
+			printf '\n    %s' "$_jl"
+		done < <(command sort -k1 -rn "$_sortbuf")
+	fi
+	command rm -f "$_sortbuf"
+
+	printf '\n  ]\n}\n'
+}
+
+# _lmd_render format manifest_file alert_type template_dir — render report (header+entries+summary+footer)
+# shellcheck disable=SC2154
+_lmd_render() {
+	local format="$1" manifest_file="$2" alert_type="$3" template_dir="$4"
+	local total
+
+	total=$(awk '/^#/{next} {c++} END{print c+0}' "$manifest_file")
+
+	_lmd_set_global_vars "$alert_type"
+
+	# Compute summary before header — HTML headers embed summary data;
+	# always compute even for single-hit reports (header needs the tokens)
+	_lmd_compute_summary "$manifest_file"
+
+	# Build scan result section for HTML — pre-render result-clean or
+	# result-dirty template into SCAN_RESULT_HTML token for header embedding
+	if [ "$format" = "html" ]; then
+		if [ "$total" -eq 0 ]; then
+			export THREAT_BADGE_HTML="<span style=\"display:inline-block;background-color:#16a34a;color:#ffffff;padding:2px 10px;border-radius:10px;font-weight:bold;font-family:'Courier New',Courier,monospace;\">&#x2713; All Clear</span>"
+			_alert_tpl_resolve "$template_dir" "${alert_type}.${format}.result-clean.tpl"
+		else
+			export THREAT_BADGE_HTML="<span style=\"display:inline-block;background-color:#dc2626;color:#ffffff;padding:2px 10px;border-radius:10px;font-weight:bold;font-family:'Courier New',Courier,monospace;\">${total} threat(s)</span>"
+			_alert_tpl_resolve "$template_dir" "${alert_type}.${format}.result-dirty.tpl"
+		fi
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			export SCAN_RESULT_HTML
+			SCAN_RESULT_HTML=$(_alert_tpl_render "$_ALERT_TPL_RESOLVED")
+		fi
+	fi
+
+	_alert_tpl_resolve "$template_dir" "${alert_type}.${format}.header.tpl"
+	_alert_tpl_render "$_ALERT_TPL_RESOLVED"
+
+	# Entry rendering: single-pass awk over manifest (O(1) forks)
+	_alert_tpl_resolve "$template_dir" "${alert_type}.${format}.entry.tpl"
+	_lmd_render_entries "$_ALERT_TPL_RESOLVED" "$manifest_file" "$total"
+
+	_alert_tpl_resolve "$template_dir" "${alert_type}.${format}.footer.tpl"
+	_alert_tpl_render "$_ALERT_TPL_RESOLVED"
+}
+
+# _lmd_render_text manifest_file alert_type template_dir — render text report
+_lmd_render_text() {
+	_lmd_render "text" "$@"
+}
+
+# _lmd_render_html manifest_file alert_type template_dir — render HTML report
+_lmd_render_html() {
+	_lmd_render "html" "$@"
+}
+
+# _lmd_render_messaging manifest_file subject template_dir [attachment] — render for Slack/Telegram/Discord
+# shellcheck disable=SC2154
+_lmd_render_messaging() {
+	local manifest_file="$1" subject="$2" template_dir="$3" attachment="${4:-}"
+	local _any_enabled=0 _ch
+	for _ch in slack telegram discord; do
+		if alert_channel_enabled "$_ch"; then
+			_any_enabled=1; break
+		fi
+	done
+	[ "$_any_enabled" = "1" ] || return 0
+
+	local total
+	total=$(awk '/^#/{next} {c++} END{print c+0}' "$manifest_file")
+
+	_lmd_set_global_vars "scan"
+
+	# Build per-entry blocks for each channel — one awk pass each
+	local _slack_blocks="" _telegram_blocks="" _discord_fields=""
+
+	if alert_channel_enabled "slack"; then
+		_alert_tpl_resolve "$template_dir" "slack.entry.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			_slack_blocks=$(_lmd_render_entries "$_ALERT_TPL_RESOLVED" "$manifest_file" "$total")
+		fi
+	fi
+
+	if alert_channel_enabled "telegram"; then
+		_alert_tpl_resolve "$template_dir" "telegram.entry.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			_telegram_blocks=$(_lmd_render_entries "$_ALERT_TPL_RESOLVED" "$manifest_file" "$total")
+		fi
+	fi
+
+	if alert_channel_enabled "discord"; then
+		_alert_tpl_resolve "$template_dir" "discord.entry.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			_discord_fields=$(_lmd_render_entries "$_ALERT_TPL_RESOLVED" "$manifest_file" "$total")
+		fi
+	fi
+
+	# Compute summary for message templates — unconditional because
+	# outer message templates reference SUMMARY_* tokens regardless of hit count
+	_lmd_compute_summary "$manifest_file"
+
+	# Export accumulated blocks for message templates
+	export ENTRY_BLOCKS_SLACK="$_slack_blocks"
+	export ENTRY_BLOCKS_TELEGRAM="$_telegram_blocks"
+	export ENTRY_FIELDS_DISCORD="$_discord_fields"
+	export SUBJECT="$subject"
+
+	local rc=0
+
+	local _ch_err
+	if alert_channel_enabled "slack"; then
+		export ENTRY_BLOCKS="$_slack_blocks"
+		_alert_tpl_resolve "$template_dir" "slack.message.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			local _slack_payload
+			_slack_payload=$(mktemp "${tmpdir}/.slack_msg.XXXXXX")
+			_alert_tpl_render "$_ALERT_TPL_RESOLVED" > "$_slack_payload"
+			_ch_err=$(_alert_handle_slack "$subject" "$_slack_payload" "" "$attachment" 2>&1 1>/dev/null) || {
+				eout "{alert} slack delivery failed${_ch_err:+: $_ch_err}"
+				_lmd_elog_event "$ELOG_EVT_ALERT_FAILED" "error" "slack delivery failed" "channel=slack" "error=${_ch_err:-unknown}"
+				rc=1
+			}
+			command rm -f "$_slack_payload"
+		fi
+	fi
+
+	if alert_channel_enabled "telegram"; then
+		export ENTRY_BLOCKS="$_telegram_blocks"
+		_alert_tpl_resolve "$template_dir" "telegram.message.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			local _tg_payload
+			_tg_payload=$(mktemp "${tmpdir}/.telegram_msg.XXXXXX")
+			_alert_tpl_render "$_ALERT_TPL_RESOLVED" > "$_tg_payload"
+			_ch_err=$(_alert_handle_telegram "$subject" "$_tg_payload" "" "$attachment" 2>&1 1>/dev/null) || {
+				eout "{alert} telegram delivery failed${_ch_err:+: $_ch_err}"
+				_lmd_elog_event "$ELOG_EVT_ALERT_FAILED" "error" "telegram delivery failed" "channel=telegram" "error=${_ch_err:-unknown}"
+				rc=1
+			}
+			command rm -f "$_tg_payload"
+		fi
+	fi
+
+	if alert_channel_enabled "discord"; then
+		export ENTRY_FIELDS="$_discord_fields"
+		_alert_tpl_resolve "$template_dir" "discord.message.tpl"
+		if [ -f "$_ALERT_TPL_RESOLVED" ]; then
+			local _dc_payload
+			_dc_payload=$(mktemp "${tmpdir}/.discord_msg.XXXXXX")
+			_alert_tpl_render "$_ALERT_TPL_RESOLVED" > "$_dc_payload"
+			_ch_err=$(_alert_handle_discord "$subject" "$_dc_payload" "" "$attachment" 2>&1 1>/dev/null) || {
+				eout "{alert} discord delivery failed${_ch_err:+: $_ch_err}"
+				_lmd_elog_event "$ELOG_EVT_ALERT_FAILED" "error" "discord delivery failed" "channel=discord" "error=${_ch_err:-unknown}"
+				rc=1
+			}
+			command rm -f "$_dc_payload"
+		fi
+	fi
+
+	return $rc
+}
+
+## Alert Dispatch (moved from functions)
+
+trim_log() {
+	local log="$1"
+	local logtrim="$2"
+	if [ -f "$log" ]; then
+		log_size=$($wc -l < "$log")
+		if [ "$log_size" -gt "$logtrim" ] 2>/dev/null; then
+			trim=$((logtrim/10))
+			local tmplog
+			tmplog=$(mktemp "${log}.trim.XXXXXX")
+			tail -n +"$((trim + 1))" "$log" > "$tmplog" 2>/dev/null
+			cat "$tmplog" > "$log" 2>/dev/null
+			command rm -f "$tmplog"
+		fi
+	elif [ ! -f "$log" ] && [ "$3" == "1" ]; then
+		touch "$log" ; chmod 640 "$log"
+	fi
+}
+
+# _genalert_messaging file tpl_dir — dispatch to Slack/Telegram/Discord channels
+# Shared by _genalert_scan and _genalert_digest; not used by _genalert_panel.
+_genalert_messaging() {
+	local _file="$1" _tpl_dir="$2"
+	[ -f "${_file:-}" ] || return 0
+	# Determine source for hit list parsing — prefer finalized session.tsv,
+	# fall back to in-flight scan_session, then legacy session.hits
+	local _msg_src=""
+	if [ -f "${scan_session:-}" ]; then
+		_msg_src="$scan_session"
+	elif [ -n "${scanid:-}" ]; then
+		_msg_src=$(_session_resolve "$scanid")
+	fi
+	if [ -n "$_msg_src" ] && [ -f "$_msg_src" ] && [ -s "$_msg_src" ]; then
+		local _msg_manifest
+		_msg_manifest=$(mktemp "$tmpdir/.msg_manifest.XXXXXX")
+		_lmd_parse_hitlist "$_msg_src" > "$_msg_manifest"
+		if [ -s "$_msg_manifest" ]; then
+			_lmd_render_messaging "$_msg_manifest" "${slack_subj:-$email_subj}" "$_tpl_dir" "$_file"
+		fi
+		command rm -f "$_msg_manifest"
+	fi
+}
+
+# _genalert_scan file fmt tpl_dir — scan report email + messaging dispatch
+_genalert_scan() {
+	local _file="$1" _fmt="$2" _tpl_dir="$3"
+	local _html=""
+	if [ ! -f "$_file" ]; then
+		[ "$email_alert" == "1" ] && eout "{alert} file input error, alert discarded."
+		return 0
+	fi
+	if [ "$email_alert" == "1" ]; then
+		if [ "$_fmt" != "text" ]; then
+			# Render HTML from TSV session data — prefer finalized session.tsv,
+			# fall back to in-flight scan_session, then legacy _resolve_html_for_session
+			local _manifest _scan_src=""
+			# Save _fmt: _session_read_meta clobbers it when reading TSV headers
+			local _save_fmt="$_fmt"
+			_manifest=$(mktemp "$tmpdir/.alert_manifest.XXXXXX")
+			if [ -f "${nsess_hits:-}" ] && _session_is_tsv "$nsess_hits"; then
+				_scan_src="$nsess_hits"
+				_session_read_meta "$nsess_hits"
+			elif [ -f "${scan_session:-}" ] && [ -s "$scan_session" ]; then
+				_scan_src="$scan_session"
+			elif _session_is_tsv "$_file"; then
+				_scan_src="$_file"
+				_session_read_meta "$_file"
+			fi
+			_fmt="$_save_fmt"
+			if [ -n "$_scan_src" ]; then
+				_lmd_parse_hitlist "$_scan_src" > "$_manifest"
+				if [ -s "$_manifest" ]; then
+					_lmd_set_global_vars "scan"
+					_lmd_compute_summary "$_manifest"
+					_html=$(mktemp "$tmpdir/.alert_html.XXXXXX")
+					_lmd_render_html "$_manifest" "scan" "$_tpl_dir" > "$_html"
+				fi
+			else
+				# Legacy text session — use existing resolver
+				# Save _fmt again: _session_read_meta inside resolver clobbers it
+				_save_fmt="$_fmt"
+				_resolve_html_for_session "$_file"
+				_fmt="$_save_fmt"
+			fi
+			command rm -f "$_manifest"
+			if [ -z "$_html" ]; then
+				eout "{alert} HTML rendering unavailable, sending text format report" 1
+				_fmt="text"
+			fi
+		fi
+		if ! _alert_deliver_email "$email_addr" "$email_subj" "$_file" "$_html" "$_fmt"; then
+			eout "{scan} no \$mail or \$sendmail binaries found, e-mail alerts disabled."
+			_lmd_elog_event "$ELOG_EVT_ALERT_FAILED" "error" "email delivery failed" "channel=email" "recipients=$email_addr"
+		else
+			_lmd_elog_event "$ELOG_EVT_ALERT_SENT" "info" "scan report emailed" "recipients=$email_addr"
+		fi
+		if [ "$(whoami)" != "root" ] && [[ "$_file" != *@* ]]; then
+			if [ -z "$hscan" ]; then
+				eout "{alert} sent scan report to config default $email_addr" 1
+				eout "{alert} send scan report to an alternate address with: maldet --report $datestamp.$$ you@domain.com" 1
+			else
+				eout "{alert} sent scan report to config default $email_addr"
+			fi
+		else
+			if [ -z "$hscan" ]; then
+				eout "{alert} sent scan report to $email_addr" 1
+			fi
+		fi
+	fi
+	# Messaging dispatch runs regardless of email_alert setting
+	_genalert_messaging "$_file" "$_tpl_dir"
+	command rm -f "$_html"  # cleanup rendered HTML tempfile
+}
+
+# _genalert_panel file fmt tpl_dir — per-user control panel email alerts
+# No messaging channel dispatch — panel alerts are email-only.
+_genalert_panel() {
+	local _file="$1" _fmt="$2" _tpl_dir="$3"
+	local hit_pat_quar='^(.*)[[:space:]]:[[:space:]](.*)[[:space:]]=>[[:space:]](.*)$'
+	local hit_pat_plain='^(.*)[[:space:]]:[[:space:]](.*)$'
+	if [ "$email_alert" != "1" ]; then
+		return 0
+	fi
+	if [ ! -f "$_file" ]; then
+		eout "{alert} file input error, alert discarded."
+		return 0
+	fi
+	eout "{panel} Detecting control panel and sending alerts..." 1
+	control_panel=""
+	detect_control_panel
+	if [ "$control_panel" == "error" ] || [ "$control_panel" == "unknown" ]; then
+		eout "{panel} Failed to set control panel. Will not send alerts to control panel account contacts." 1
+	else
+		# Resolve hit source: prefer finalized TSV, then in-flight scan_session,
+		# then parse FILE HIT LIST from rendered session file
+		local _panel_src="" _panel_tmp=0
+		if [ -f "${nsess_hits:-}" ] && _session_is_tsv "$nsess_hits"; then
+			_panel_src="$nsess_hits"
+		elif [ -f "${scan_session:-}" ] && [ -s "$scan_session" ]; then
+			_panel_src="$scan_session"
+		elif [ -f "$_file" ]; then
+			# Fallback: extract FILE HIT LIST from rendered session file
+			_panel_src=$(mktemp "$tmpdir/.panel_src.XXXXXX")
+			_panel_tmp=1
+			awk '/FILE HIT LIST:/{flag=1;next}/^=======/{flag=0}flag' "$_file" > "$_panel_src"
+		fi
+		# Sort malware hits and map to system user owner
+		# Intermediate format: owner\tsig\tfilepath\tquarpath (tab-delimited to preserve quarantine paths)
+		# Loop vars intentionally non-local: behavioral parity with original genalert() — scoping cleanup deferred
+		if [ -n "$_panel_src" ] && [ -f "$_panel_src" ] && _session_is_tsv "$_panel_src" 2>/dev/null; then
+			# TSV: read sig and filepath directly from tab-delimited fields
+			local _p_sig _p_fp _p_qp _p_rest
+			while IFS=$'\t' read -r _p_sig _p_fp _p_qp _p_rest; do
+				[[ "$_p_sig" == "#"* ]] && continue
+				[ -z "$_p_fp" ] && continue
+				if [ -f "$_p_fp" ]; then
+					if [ "$os_freebsd" = "1" ]; then
+						file_owner=$($stat -f '%Su' "$_p_fp")
+					else
+						file_owner=$($stat -c '%U' "$_p_fp")
+					fi
+				elif [ "$_p_qp" != "-" ] && [ -n "$_p_qp" ] && [ -f "${_p_qp}.info" ]; then
+					file_owner=$(awk -F':' '/^[^#]/{print $1}' "${_p_qp}.info")
+				else
+					continue
+				fi
+				printf '%s\t%s\t%s\t%s\n' "$file_owner" "$_p_sig" "$_p_fp" "${_p_qp:--}" >> "$tmpdir/.panel_alert.hits"
+			done < "$_panel_src"
+		elif [ -n "$_panel_src" ] && [ -f "$_panel_src" ]; then
+			# Legacy: regex parsing of "sig : path" / "sig : path => quarpath"
+			while IFS= read -r hit_line; do
+				[ -z "$hit_line" ] && continue
+				if [[ "$hit_line" =~ $hit_pat_quar ]]; then
+					hit_sig="${BASH_REMATCH[1]}"
+					hit_file="${BASH_REMATCH[2]}"
+					quarantined_file="${BASH_REMATCH[3]}"
+				elif [[ "$hit_line" =~ $hit_pat_plain ]]; then
+					hit_sig="${BASH_REMATCH[1]}"
+					hit_file="${BASH_REMATCH[2]}"
+					quarantined_file=""
+				else
+					continue
+				fi
+				if [ -f "$hit_file" ]; then
+					# Portable owner lookup (no md5sum — only username needed for panel routing)
+					if [ "$os_freebsd" = "1" ]; then
+						file_owner=$($stat -f '%Su' "$hit_file")
+					else
+						file_owner=$($stat -c '%U' "$hit_file")
+					fi
+				elif [ -n "$quarantined_file" ] && [ -f "${quarantined_file}.info" ]; then
+					file_owner=$(awk -F':' '/^[^#]/{print $1}' "${quarantined_file}.info")
+				else
+					continue
+				fi
+				printf '%s\t%s\t%s\t%s\n' "$file_owner" "$hit_sig" "$hit_file" "${quarantined_file:--}" >> "$tmpdir/.panel_alert.hits"
+			done < "$_panel_src"
+		fi
+		# Clean up fallback temp if used
+		if [ "$_panel_tmp" = "1" ]; then
+			command rm -f "$_panel_src"
+		fi
+		# Sort cleaned files too
+		if [ "$quarantine_clean" == "1" ] && [ -f "$sessdir/clean.$$" ]; then
+			while IFS= read -r clean_file; do
+				if [ -f "$clean_file" ]; then
+					# Portable owner lookup (no md5sum — only username needed for panel routing)
+					if [ "$os_freebsd" = "1" ]; then
+						clean_owner=$($stat -f '%Su' "$clean_file")
+					else
+						clean_owner=$($stat -c '%U' "$clean_file")
+					fi
+				fi
+				echo "$clean_owner : $clean_file" >> "$tmpdir/.panel_alert.clean"
+			done < "$sessdir/clean.$$"
+		fi
+		eout "{panel} Detected control panel $control_panel. Will send alerts to control panel account contacts." 1
+		user_list=$(awk -F'\t' '{print $1}' "$tmpdir/.panel_alert.hits" | sort | uniq)
+		if [ -n "$user_list" ]; then
+			for sys_user in $user_list; do
+				contact_emails=""
+				get_panel_contacts "$control_panel" "$sys_user"
+
+				# Extract per-user hits in legacy format (sig : filepath [=> quarpath])
+				# _lmd_parse_hitlist parses this to 6-field manifest with quarantine data
+				awk -F'\t' -v user="$sys_user" '$1 == user {
+					if ($4 != "" && $4 != "-") printf "%s : %s => %s\n", $2, $3, $4
+					else printf "%s : %s\n", $2, $3
+				}' "$tmpdir/.panel_alert.hits" > "$tmpdir/.${sys_user}.hits"
+				user_tot_hits=$($wc -l < "$tmpdir/.${sys_user}.hits")
+				user_tot_cl=0
+				if [ -f "$tmpdir/.panel_alert.clean" ]; then
+					grep "^$sys_user " "$tmpdir/.panel_alert.clean" | awk '{print $3}' > "$tmpdir/.${sys_user}.clean"
+					user_tot_cl=$($wc -l < "$tmpdir/.${sys_user}.clean")
+				fi
+
+				# Render per-user panel alert via template engine
+				local _user_manifest _user_text _user_html=""
+				_user_manifest=$(mktemp "$tmpdir/.panel_manifest.XXXXXX")
+				_lmd_parse_hitlist "$tmpdir/.${sys_user}.hits" > "$_user_manifest"
+				_user_text=$(mktemp "$tmpdir/.panel_text.XXXXXX")
+				_lmd_render_text "$_user_manifest" "panel" "$_tpl_dir" > "$_user_text"
+				if [ "$_fmt" = "html" ] || [ "$_fmt" = "both" ]; then
+					_user_html=$(mktemp "$tmpdir/.panel_html.XXXXXX")
+					_lmd_render_html "$_user_manifest" "panel" "$_tpl_dir" > "$_user_html"
+				fi
+				# Deliver with custom From/Reply-To
+				ALERT_SMTP_FROM="$email_panel_from" \
+				ALERT_EMAIL_REPLY_TO="$email_panel_replyto" \
+				_alert_deliver_email "$contact_emails" "$email_panel_alert_subj" "$_user_text" "$_user_html" "$_fmt"
+				command rm -f "$_user_manifest" "$_user_text" "$_user_html"
+			done
+		fi
+		command rm -f "$tmpdir/.panel_alert.hits" "$tmpdir/.panel_alert.clean"
+		for sys_user in $user_list; do
+			command rm -f "$tmpdir/.${sys_user}.hits" "$tmpdir/.${sys_user}.clean"
+		done
+	fi
+}
+
+# _digest_set_hook_section_vars — compute HOOK_SECTION_* vars from $tmpdir/.digest.hook.hits
+_digest_set_hook_section_vars() {
+	export HOOK_SECTION_TEXT=""
+	export HOOK_SECTION_HTML=""
+	export HOOK_TOTAL_HITS="0"
+	export HOOK_MODE_BREAKDOWN=""
+
+	if [ ! -s "$tmpdir/.digest.hook.hits" ]; then
+		return 0
+	fi
+
+	# Count and build mode breakdown from field 12 (hook_mode)
+	local _hook_count _mode_breakdown _hook_detail
+	_hook_count=$($wc -l < "$tmpdir/.digest.hook.hits")
+	HOOK_TOTAL_HITS="$_hook_count"
+
+	# Build mode breakdown: "modsec: N, ftp: N, ..."
+	_mode_breakdown=$(awk -F'\t' '{
+		mode = (NF >= 12) ? $12 : "unknown"
+		counts[mode]++
+	}
+	END {
+		first = 1
+		for (m in counts) {
+			if (!first) printf ", "
+			printf "%s: %d", m, counts[m]
+			first = 0
+		}
+	}' "$tmpdir/.digest.hook.hits")
+	HOOK_MODE_BREAKDOWN="$_mode_breakdown"
+
+	# Build per-entry detail lines: sig filepath hook_mode
+	_hook_detail=$(awk -F'\t' '{
+		sig = $1; fp = $2
+		mode = (NF >= 12) ? $12 : "unknown"
+		printf "  %-40s %-50s %s\n", sig, fp, mode
+	}' "$tmpdir/.digest.hook.hits")
+
+	HOOK_SECTION_TEXT="HOOK SCANNING:
+  ${_hook_count} detection(s) (${_mode_breakdown}) since last digest
+${_hook_detail}
+"
+
+	# Build HTML section
+	local _hook_rows
+	_hook_rows=$(awk -F'\t' 'BEGIN { ORS="" }
+	{
+		sig = $1; fp = $2
+		mode = (NF >= 12) ? $12 : "unknown"
+		# HTML-escape basic characters
+		gsub(/&/, "\\&amp;", sig); gsub(/</, "\\&lt;", sig); gsub(/>/, "\\&gt;", sig)
+		gsub(/&/, "\\&amp;", fp); gsub(/</, "\\&lt;", fp); gsub(/>/, "\\&gt;", fp)
+		gsub(/&/, "\\&amp;", mode); gsub(/</, "\\&lt;", mode); gsub(/>/, "\\&gt;", mode)
+		printf "<tr><td style=\"padding:4px 8px;font-family:'"'"'Courier New'"'"',Courier,monospace;font-size:12px;border-bottom:1px solid #e4e4e7;\">%s</td>", sig
+		printf "<td style=\"padding:4px 8px;font-size:12px;border-bottom:1px solid #e4e4e7;word-break:break-all;\">%s</td>", fp
+		printf "<td style=\"padding:4px 8px;font-size:12px;border-bottom:1px solid #e4e4e7;\">%s</td></tr>\n", mode
+	}' "$tmpdir/.digest.hook.hits")
+
+	HOOK_SECTION_HTML="<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"margin-bottom:12px;\">
+<tr><td style=\"color:#71717a;font-size:12px;text-transform:uppercase;letter-spacing:1px;padding-bottom:6px;\">Hook Scanning &mdash; ${_hook_count} detection(s) (${_mode_breakdown})</td></tr>
+<tr><td><table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"font-size:12px;border:1px solid #d4d4d8;border-radius:4px;overflow:hidden;\">
+<tr style=\"background-color:#f4f4f5;\"><th style=\"padding:6px 8px;text-align:left;font-size:11px;color:#52525b;\">Signature</th><th style=\"padding:6px 8px;text-align:left;font-size:11px;color:#52525b;\">File</th><th style=\"padding:6px 8px;text-align:left;font-size:11px;color:#52525b;\">Hook</th></tr>
+${_hook_rows}
+</table></td></tr></table>"
+}
+
+# _genalert_digest fmt tpl_dir type — unified digest: monitor + hook sources
+# Reads up to 5 tlog-cursored sources: 4 monitor (conditional) + 1 hook (always).
+# Type parameter preserves "daily" vs "digest" distinction for log messages.
+_genalert_digest() {
+	local _fmt="$1" _tpl_dir="$2" _type="$3"
+	local digest_tmpf=""
+	local _has_monitor=0
+
+	# Monitor preamble — conditional on active monitor session
+	if [ -f "$sessdir/session.monitor.current" ]; then
+		_has_monitor=1
+		inotify_start_time=$(ps -p "$(ps -A -o 'pid cmd' | grep -E maldetect | grep -E inotifywait | awk '{print$1}' | head -n1)" -o lstart= 2> /dev/null)
+		if [ -n "$inotify_start_time" ]; then
+			scan_start_hr=$(date -d "$inotify_start_time" +"%b %e %Y %H:%M:%S %z")
+			scan_start_elapsed=$(($(date +'%s')-$(date -d "$scan_start_hr" +'%s')))
+			inotify_run_time="$(($scan_start_elapsed/86400))d:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))/3600))h:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%3600/60))m:$(($(($scan_start_elapsed - $scan_start_elapsed/86400*86400))%60))s"
+		else
+			inotify_run_time="-"
+		fi
+	else
+		inotify_run_time="-"
+	fi
+
+	command rm -f "$tmpdir/.digest.alert.hits" "$tmpdir/.digest.clean.hits" "$tmpdir/.digest.monitor.alert" "$tmpdir/.digest.susp.hits" "$tmpdir/.digest.hook.hits"
+
+	scanid="$datestamp.$$"
+
+	# Monitor tlog sources — only read when monitor session is active
+	if [ "$_has_monitor" -eq 1 ]; then
+		scan_session=$(cat "$sessdir/session.monitor.current")
+		tlog_read "$scan_session" "digest.alert" "$tmpdir" "lines" > "$tmpdir/.digest.alert.hits"
+		tlog_read "$clean_history" "digest.clean.alert" "$tmpdir" "lines" > "$tmpdir/.digest.clean.hits"
+		tlog_read "$monitor_scanned_history" "digest.monitor.alert" "$tmpdir" "lines" > "$tmpdir/.digest.monitor.alert"
+		tlog_read "$suspend_history" "digest.susp.alert" "$tmpdir" "lines" > "$tmpdir/.digest.susp.hits"
+	else
+		touch "$tmpdir/.digest.alert.hits" "$tmpdir/.digest.clean.hits" "$tmpdir/.digest.monitor.alert" "$tmpdir/.digest.susp.hits"
+	fi
+
+	# Hook scan hits (always read, regardless of monitor state)
+	if [ -f "$sessdir/hook.hits.log" ]; then
+		tlog_read "$sessdir/hook.hits.log" "digest.hook.alert" "$tmpdir" "bytes" > "$tmpdir/.digest.hook.hits" 2>/dev/null  # safe: tlog_read handles missing cursor
+	else
+		touch "$tmpdir/.digest.hook.hits"
+	fi
+
+	tot_hits=$($wc -l < "$tmpdir/.digest.alert.hits")
+	tot_cl=$($wc -l < "$tmpdir/.digest.clean.hits")
+	tot_files=$($wc -l < "$tmpdir/.digest.monitor.alert")
+	tot_susp=$($wc -l < "$tmpdir/.digest.susp.hits")
+
+	local _hook_hit_count
+	_hook_hit_count=$($wc -l < "$tmpdir/.digest.hook.hits")
+
+	# Bail if no new data from any source
+	if [ "$tot_hits" -eq 0 ] && [ "$_hook_hit_count" -eq 0 ]; then
+		command rm -f "$tmpdir/.digest.alert.hits" "$tmpdir/.digest.clean.hits" "$tmpdir/.digest.monitor.alert" "$tmpdir/.digest.susp.hits" "$tmpdir/.digest.hook.hits"
+		return 0
+	fi
+
+	# Merge hook hits into main digest hits (12-field TSV -> 11-field TSV for manifest)
+	# Hook hits have an extra field (hook_mode) at position 12 — strip it for the
+	# shared manifest pipeline, but preserve the raw hook file for section rendering
+	if [ -s "$tmpdir/.digest.hook.hits" ]; then
+		# Append hook hits to the main digest hits (first 11 fields only)
+		awk -F'\t' '{
+			# Output first 11 fields (drop hook_mode field 12 if present)
+			out = ""
+			for (i = 1; i <= 11 && i <= NF; i++) {
+				if (i > 1) out = out "\t"
+				out = out $i
+			}
+			print out
+		}' "$tmpdir/.digest.hook.hits" >> "$tmpdir/.digest.alert.hits"
+		tot_hits=$($wc -l < "$tmpdir/.digest.alert.hits")
+	fi
+
+	# Export hook section data for template rendering
+	_digest_set_hook_section_vars
+
+	if [ "$_has_monitor" -eq 1 ]; then
+		trim_log "$monitor_scanned_history" 50000
+		trim_log "$clean_history" 50000
+		trim_log "$suspend_history" 50000
+	fi
+	trim_log "$sessdir/hook.hits.log" 50000
+
+	# Advance cursors past current position (prevents re-reading on next digest)
+	if [ "$_has_monitor" -eq 1 ]; then
+		tlog_read "$scan_session" "digest.alert" "$tmpdir" "lines" >> /dev/null 2>&1  # safe: advance only
+		tlog_read "$clean_history" "digest.clean.alert" "$tmpdir" "lines" >> /dev/null 2>&1  # safe: advance only
+		tlog_read "$monitor_scanned_history" "digest.monitor.alert" "$tmpdir" "lines" >> /dev/null 2>&1  # safe: advance only
+		tlog_read "$suspend_history" "digest.susp.alert" "$tmpdir" "lines" >> /dev/null 2>&1  # safe: advance only
+	fi
+	if [ -f "$sessdir/hook.hits.log" ]; then
+		tlog_read "$sessdir/hook.hits.log" "digest.hook.alert" "$tmpdir" "bytes" >> /dev/null 2>&1  # safe: advance only
+	fi
+
+	if [ -s "$tmpdir/.digest.alert.hits" ]; then
+		if [ "$tot_hits" -gt "$tot_files" ]; then
+			tot_files="$tot_hits"
+		fi
+
+		# Write digest TSV session file (complete header + accumulated hits)
+		local _digest_tsv="$sessdir/session.tsv.$scanid"
+		nsess_hits="$_digest_tsv"
+		_session_write_header "$_digest_tsv" "digest"
+		# Append hit records (skip any header lines from tlog_read output)
+		awk '!/^#/' "$tmpdir/.digest.alert.hits" >> "$_digest_tsv"
+		echo "$scanid" > "$sessdir/session.last"
+
+		# Render via template engine (build manifest from TSV)
+		local _digest_manifest
+		_digest_manifest=$(mktemp "$tmpdir/.digest_manifest.XXXXXX")
+		_lmd_parse_hitlist "$_digest_tsv" > "$_digest_manifest"
+
+		local _digest_text _digest_html=""
+		_digest_text=$(mktemp "$tmpdir/.digest_text.XXXXXX")
+		_lmd_render_text "$_digest_manifest" "digest" "$_tpl_dir" > "$_digest_text"
+		if [ "$_fmt" = "html" ] || [ "$_fmt" = "both" ]; then
+			_digest_html=$(mktemp "$tmpdir/.digest_html.XXXXXX")
+			_lmd_render_html "$_digest_manifest" "digest" "$_tpl_dir" > "$_digest_html"
+		fi
+
+		# ELK posting (reads TSV directly, skipping header)
+		_lmd_elk_post_hits "$_digest_tsv"
+
+		# Legacy plaintext session file (conditional on session_legacy_compat)
+		_session_render_legacy_text "$_digest_tsv" "$sessdir/session.$scanid"
+
+		local digest_subj
+		digest_subj="${email_subj}: monitor summary"
+		if _alert_deliver_email "$email_addr" "$digest_subj" "$_digest_text" "$_digest_html" "$_fmt"; then
+			eout "{alert} sent $_type alert to $email_addr"
+		else
+			_lmd_elog_event "$ELOG_EVT_ALERT_FAILED" "error" "digest email delivery failed" "channel=email" "recipients=$email_addr"
+			eout "{scan} no \$mail or \$sendmail binaries found, e-mail alerts disabled."
+		fi
+		# Alias for outer cleanup guard: _digest_text is scoped inside the if-block
+		digest_tmpf="$_digest_text"
+
+		command rm -f "$_digest_manifest" "$_digest_html"
+		command rm -f "$tmpdir/.digest.alert.hits" "$tmpdir/.digest.clean.hits" "$tmpdir/.digest.monitor.alert" "$tmpdir/.digest.susp.hits" "$tmpdir/.digest.hook.hits"
+
+		# Messaging dispatch must run before digest temp file cleanup
+		_genalert_messaging "$_digest_text" "$_tpl_dir"
+	fi
+
+	# Clean up digest report temp file if generated
+	if [ -n "$digest_tmpf" ] && [ -f "$digest_tmpf" ]; then
+		command rm -f "$digest_tmpf"
+	fi
+}
+
+# _test_scan_hits — build temp session file with 3 synthetic hits; outputs path (caller cleans up)
+_test_scan_hits() {
+	local _session
+	_session=$(mktemp "$tmpdir/.test_session.XXXXXX")
+	local _save_scanid="${scanid:-}"
+	local _save_hrspath="${hrspath:-}"
+	local _save_tot_files="${tot_files:-}"
+	local _save_tot_hits="${tot_hits:-}"
+	local _save_tot_cl="${tot_cl:-}"
+	local _save_scan_start="${scan_start_hr:-}"
+	local _save_scan_end="${scan_end_hr:-}"
+	local _save_scan_et="${scan_et:-}"
+	scanid="test-alert.$$"
+	hrspath="/home/testuser/public_html"
+	tot_files="150"
+	tot_hits="3"
+	tot_cl="0"
+	scan_start_hr=$(date +"%b %e %Y %H:%M:%S %z")
+	scan_end_hr="$scan_start_hr"
+	scan_et="5"
+	_session_write_header "$_session" "scan"
+	# 3 synthetic hits covering MD5, HEX, and YARA signature types
+	# 11-field TSV: sig, filepath, quarpath, hit_type, hit_type_label, hash, size, owner, group, mode, mtime
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		'{MD5}test.malware.sample.1' '/home/testuser/public_html/wp-content/uploads/shell.php' \
+		'-' 'MD5' 'MD5 Hash' 'ae45f3c9b1d2e4f5a6b7c8d9e0f1a2b3' \
+		'33279' 'www-data' '33' '644' "$(date +%s)" >> "$_session"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		'{HEX}php.cmdshell.generic.482' '/home/testuser/public_html/includes/config.old.php' \
+		'-' 'HEX' 'HEX Pattern' '-' \
+		'1024' 'testuser' '1000' '644' "$(date +%s)" >> "$_session"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		'{YARA}php.webshell.backdoor' '/home/testuser/public_html/assets/thumb.php' \
+		'-' 'YARA' 'YARA Rule' '-' \
+		'2048' 'testuser' '1000' '644' "$(date +%s)" >> "$_session"
+	# Restore scan context
+	scanid="$_save_scanid"
+	hrspath="$_save_hrspath"
+	tot_files="$_save_tot_files"
+	tot_hits="$_save_tot_hits"
+	tot_cl="$_save_tot_cl"
+	scan_start_hr="$_save_scan_start"
+	scan_end_hr="$_save_scan_end"
+	scan_et="$_save_scan_et"
+	echo "$_session"
+}
+
+# _test_alert_scan channel — dispatch test alert; saves/restores context that _session_read_meta clobbers
+_test_alert_scan() {
+	local _channel="$1"
+	local _tpl_dir="${ALERT_TEMPLATE_DIR:-$libpath/alert}"
+	local _fmt="${email_format:-html}"
+	local _session
+	_session=$(_test_scan_hits)
+
+	local _orig_subj="${email_subj:-}"
+	email_subj="[TEST] ${email_subj:-maldet alert}"
+
+	# Point nsess_hits and scan_session at the test session so _genalert_scan
+	# and _genalert_messaging can find it for both email and messaging dispatch
+	local _save_nsess_hits="${nsess_hits:-}"
+	local _save_scan_session="${scan_session:-}"
+	nsess_hits="$_session"
+	scan_session="$_session"
+
+	# Save scan context — _genalert_scan/_session_read_meta clobber these
+	local _save_tot_hits="${tot_hits:-}" _save_tot_files="${tot_files:-}" _save_tot_cl="${tot_cl:-}"
+	local _save_scanid="${scanid:-}" _save_hrspath="${hrspath:-}" _save_days="${days:-}"
+
+	case "$_channel" in
+		email)
+			if [ "${email_alert:-0}" != "1" ]; then
+				eout "{test-alert} email alerting is not enabled (email_alert=0)" 1
+				command rm -f "$_session"
+				email_subj="$_orig_subj"
+				return 1
+			fi
+			if [ "${email_addr:-}" == "you@domain.com" ] || [ -z "${email_addr:-}" ]; then
+				eout "{test-alert} email address not configured (email_addr)" 1
+				command rm -f "$_session"
+				email_subj="$_orig_subj"
+				return 1
+			fi
+			# Suppress messaging channels — email only
+			local _orig_slack="${slack_alert:-0}" _orig_telegram="${telegram_alert:-0}" _orig_discord="${discord_alert:-0}"
+			slack_alert=0; telegram_alert=0; discord_alert=0
+			_lmd_alert_init
+			_genalert_scan "$_session" "$_fmt" "$_tpl_dir"
+			# Restore channel state
+			slack_alert="$_orig_slack"; telegram_alert="$_orig_telegram"; discord_alert="$_orig_discord"
+			_lmd_alert_init
+			;;
+		slack|telegram|discord)
+			# Check channel is enabled
+			local _enabled_var="${_channel}_alert"
+			if [ "${!_enabled_var:-0}" != "1" ]; then
+				eout "{test-alert} ${_channel} alerting is not enabled (${_enabled_var}=0)" 1
+				command rm -f "$_session"
+				email_subj="$_orig_subj"
+				nsess_hits="$_save_nsess_hits"
+				scan_session="$_save_scan_session"
+				tot_hits="$_save_tot_hits"; tot_files="$_save_tot_files"; tot_cl="$_save_tot_cl"
+				scanid="$_save_scanid"; hrspath="$_save_hrspath"; days="$_save_days"
+				return 1
+			fi
+			# Save other channel states and suppress them — isolate target channel
+			local _orig_email="${email_alert:-0}"
+			local _orig_slack="${slack_alert:-0}" _orig_telegram="${telegram_alert:-0}" _orig_discord="${discord_alert:-0}"
+			email_alert=0; slack_alert=0; telegram_alert=0; discord_alert=0
+			# Enable only target channel
+			eval "${_channel}_alert=1"
+			_lmd_alert_init
+			_genalert_scan "$_session" "$_fmt" "$_tpl_dir"
+			# Restore all channel state
+			email_alert="$_orig_email"
+			slack_alert="$_orig_slack"; telegram_alert="$_orig_telegram"; discord_alert="$_orig_discord"
+			_lmd_alert_init
+			;;
+	esac
+
+	# Restore scan context to prevent postrun() exit 2
+	tot_hits="$_save_tot_hits"; tot_files="$_save_tot_files"; tot_cl="$_save_tot_cl"
+	scanid="$_save_scanid"; hrspath="$_save_hrspath"; days="$_save_days"
+	email_subj="$_orig_subj"
+	nsess_hits="$_save_nsess_hits"
+	scan_session="$_save_scan_session"
+	command rm -f "$_session"
+	eout "{test-alert} test ${_channel} scan alert sent" 1
+}
+
+# _test_alert_digest channel — dispatch a test digest alert to a single channel
+# Applies channel isolation (S-REG-004) and truncates test entries after dispatch (S-REG-002).
+_test_alert_digest() {
+	local _channel="$1"
+
+	case "$_channel" in
+		email)
+			if [ "${email_alert:-0}" != "1" ]; then
+				eout "{test-alert} email alerting is not enabled (email_alert=0)" 1
+				return 1
+			fi
+			if [ "${email_addr:-}" == "you@domain.com" ] || [ -z "${email_addr:-}" ]; then
+				eout "{test-alert} email address not configured (email_addr)" 1
+				return 1
+			fi
+			;;
+		slack|telegram|discord)
+			local _enabled_var="${_channel}_alert"
+			if [ "${!_enabled_var:-0}" != "1" ]; then
+				eout "{test-alert} ${_channel} alerting is not enabled (${_enabled_var}=0)" 1
+				return 1
+			fi
+			;;
+	esac
+
+	# Create temporary test hook hits
+	local _test_hook_log="$sessdir/hook.hits.log"
+	local _had_hook_log=0
+	[ -f "$_test_hook_log" ] && _had_hook_log=1
+
+	# Record original file size so we can truncate test entries after dispatch (S-REG-002)
+	local _orig_size
+	_orig_size=$(stat -c %s "$_test_hook_log" 2>/dev/null || stat -f %z "$_test_hook_log" 2>/dev/null || echo 0)  # safe: FreeBSD fallback; 0 if file absent
+
+	# Back up existing cursor to prevent advancing the real one
+	local _cursor_file="$tmpdir/digest.hook.alert"
+	local _had_cursor=0 _cursor_backup=""
+	if [ -f "$_cursor_file" ]; then
+		_had_cursor=1
+		_cursor_backup=$(cat "$_cursor_file")
+	fi
+
+	local _now
+	_now=$(date +%s)
+	# 13-field TSV hook hit format: sig, filepath, quarpath, hit_type, hit_type_label,
+	# hash, size, owner, group, mode, mtime, hook_mode, timestamp (S-REG-003)
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		'{HEX}php.cmdshell.test.1' '/home/testuser/public_html/shell.php' \
+		'-' 'HEX' 'HEX Pattern' '-' \
+		'1024' 'testuser' '1000' '644' "$_now" 'modsec' "$_now" >> "$_test_hook_log"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		'{YARA}php.webshell.test.2' '/home/testuser/public_html/backdoor.php' \
+		'-' 'YARA' 'YARA Rule' '-' \
+		'2048' 'testuser' '1000' '644' "$_now" 'ftp' "$_now" >> "$_test_hook_log"
+
+	# Force tlog_read to see only the two test hits we just appended.
+	# Seeding the cursor to _orig_size (the file size BEFORE the append)
+	# fixes three defects in the prior implementation:
+	#   1. First-run path: without a cursor, tlog_read skips content entirely
+	#      under default TLOG_FIRST_RUN=skip, silently swallowing our test hits
+	#      on fresh installs. Pre-creating the cursor forces the growth path.
+	#   2. Data leak: an existing cursor trailing _orig_size would make
+	#      tlog_read also read unalerted real hook hits into the test email.
+	#      Seeding to _orig_size restricts the delta to our synthetic data.
+	#   3. Double delivery: the prior restore (cursor_backup) left the real
+	#      cursor un-advanced, causing the next real digest to re-send the
+	#      real hits that had been included in the test email.
+	echo "$_orig_size" > "$_cursor_file"
+
+	# Save scan context — genalert digest clobbers these via _genalert_digest
+	local _save_tot_hits="${tot_hits:-}" _save_tot_files="${tot_files:-}" _save_tot_cl="${tot_cl:-}"
+	local _save_scanid="${scanid:-}"
+
+	local _orig_subj="${email_subj:-}"
+	email_subj="[TEST] ${email_subj:-maldet alert}"
+
+	# Channel isolation (S-REG-004): suppress all channels, enable only target
+	local _orig_email="${email_alert:-0}"
+	local _orig_slack="${slack_alert:-0}" _orig_telegram="${telegram_alert:-0}" _orig_discord="${discord_alert:-0}"
+	email_alert=0; slack_alert=0; telegram_alert=0; discord_alert=0
+	case "$_channel" in
+		email)    email_alert=1 ;;
+		slack|telegram|discord) eval "${_channel}_alert=1" ;;
+	esac
+	_lmd_alert_init
+
+	genalert digest
+
+	# Restore channel state
+	email_alert="$_orig_email"
+	slack_alert="$_orig_slack"; telegram_alert="$_orig_telegram"; discord_alert="$_orig_discord"
+	_lmd_alert_init
+
+	email_subj="$_orig_subj"
+
+	# Restore scan context to prevent postrun() exit 2
+	tot_hits="$_save_tot_hits"; tot_files="$_save_tot_files"; tot_cl="$_save_tot_cl"
+	scanid="$_save_scanid"
+
+	# Restore cursor
+	if [ "$_had_cursor" -eq 1 ]; then
+		echo "$_cursor_backup" > "$_cursor_file"
+	else
+		command rm -f "$_cursor_file"
+	fi
+
+	# Truncate test entries from hook.hits.log (S-REG-002).
+	# Guard against trim_log having shortened the file during _genalert_digest
+	# (fires when hook.hits.log has >50000 lines). trim_log removes the OLDEST
+	# lines from the head, so our test hits at the tail survive — but the file
+	# byte offset shifts. On a now-smaller file, truncate -s _orig_size would
+	# extend with NUL bytes and corrupt the TSV. Skip truncate in that case
+	# and accept that the test hits will leak into the next real digest as
+	# part of the post-trim_log rotation-detection path. Edge case requires
+	# >50000 unalerted hook hits, which indicates hook alerting was already
+	# broken before the test ran.
+	if [ "$_had_hook_log" -eq 1 ]; then
+		local _cur_size
+		_cur_size=$(stat -c %s "$_test_hook_log" 2>/dev/null || stat -f %z "$_test_hook_log" 2>/dev/null || echo "$_orig_size")  # safe: FreeBSD fallback; _orig_size if stat fails
+		if [ "$_cur_size" -gt "$_orig_size" ]; then
+			command truncate -s "$_orig_size" "$_test_hook_log"
+		fi
+	else
+		command rm -f "$_test_hook_log"
+	fi
+
+	eout "{test-alert} test ${_channel} digest alert sent" 1
+}
+
+genalert() {
+	local type="$1"
+	local file="$2"
+	local _tpl_dir="${ALERT_TEMPLATE_DIR:-$libpath/alert}"
+	local _fmt="${email_format:-html}"
+
+	case "$type" in
+		file)
+			_genalert_scan "$file" "$_fmt" "$_tpl_dir"
+			;;
+		panel)
+			_genalert_panel "$file" "$_fmt" "$_tpl_dir"
+			;;
+		daily|digest)
+			_genalert_digest "$_fmt" "$_tpl_dir" "$type"
+			;;
+		*)
+			if [ "$email_alert" == "1" ]; then
+				eout "{alert} file input error, alert discarded."
+			fi
+			;;
+	esac
+}

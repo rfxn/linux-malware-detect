@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Batch scan workers — MD5/SHA-256, HEX+CSIG, and string length engines
+
+# Source guard
+[[ -n "${_LMD_ENGINE_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_ENGINE_LOADED=1
+
+_hash_batch_worker() {
+	# Self-contained batch hash scanner for a chunk of files.
+	# Runs in a subshell (backgrounded by caller).
+	# Outputs tab-delimited filepath\thash\tsigname triples to stdout.
+	# _hash_label must match _scan_cleanup() globs
+	# _sigfile format: HASH:SIZE:{TYPE}sig.name.N
+	local _hashcmd="$1" _hash_label="$2" _chunk="$3" _sigfile="$4" _progress_file="${5:-}"
+	local _w_scanid="${6:-}"
+	local _hash_out
+	if [ "$os_freebsd" == "1" ]; then
+		# FreeBSD hash -q outputs hash only (no filename); loop to pair them
+		local _fbsd_out _fpath _fhash _fbsd_count=0
+		_fbsd_out=$(mktemp "$tmpdir/.${_hash_label}_fbsd.$$.XXXXXX")
+		while IFS= read -r _fpath; do
+			[ -f "$_fpath" ] && [ -r "$_fpath" ] || continue
+			_fhash=$($_hashcmd "$_fpath")
+			printf '%s\t%s\n' "$_fhash" "$_fpath"
+			_fbsd_count=$((_fbsd_count + 1))
+			if [ -n "$_progress_file" ] && ((_fbsd_count % 500 == 0)); then
+				echo "$_fbsd_count" > "$_progress_file"
+			fi
+		done < "$_chunk" > "$_fbsd_out"
+		[ -n "$_progress_file" ] && echo "$_fbsd_count" > "$_progress_file"
+		# awk join: load sigs, match on hash field
+		awk -F'\t' -v sigfile="$_sigfile" '
+		BEGIN {
+			while ((getline line < sigfile) > 0) {
+				colon1 = index(line, ":")
+				if (colon1 > 0) {
+					h = substr(line, 1, colon1 - 1)
+					rest = substr(line, colon1 + 1)
+					colon2 = index(rest, ":")
+					if (colon2 > 0) sigs[h] = substr(rest, colon2 + 1)
+				}
+			}
+			close(sigfile)
+		}
+		{ if ($1 in sigs) print $2 "\t" $1 "\t" sigs[$1] }
+		' "$_fbsd_out"
+		command rm -f "$_fbsd_out"
+		# Check lifecycle sentinels after FreeBSD hash batch (Phase 5)
+		if [ -n "$_w_scanid" ]; then
+			local _sentinel_rc
+			_lifecycle_check_sentinels "$_w_scanid"
+			_sentinel_rc=$?
+			if [ "$_sentinel_rc" -eq 1 ]; then
+				exit 3  # abort
+			fi
+			if [ "$_sentinel_rc" -eq 4 ]; then
+				exit 4  # stop — stage granularity, no per-chunk checkpoint
+			fi
+			# _scan_pid = actual scan process PID (BASHPID); safe in background mode
+			_lifecycle_check_parent "${_scan_pid:-$$}" || exit 5  # orphaned
+		fi
+	else
+		# Linux: xargs hashcmd hashes all files in one process
+		_hash_out=$(mktemp "$tmpdir/.${_hash_label}_linux.$$.XXXXXX")
+		xargs -d '\n' "$_hashcmd" < "$_chunk" > "$_hash_out" 2>/dev/null  # suppress errors on unreadable files
+		# awk join: load sigs (hash->signame), scan hash output for matches
+		# Output format: "hash  filepath" (two spaces)
+		# Writes progress every 500 files when progress file is set.
+		awk -v sigfile="$_sigfile" -v pfile="$_progress_file" '
+		BEGIN {
+			while ((getline line < sigfile) > 0) {
+				colon1 = index(line, ":")
+				if (colon1 > 0) {
+					h = substr(line, 1, colon1 - 1)
+					rest = substr(line, colon1 + 1)
+					colon2 = index(rest, ":")
+					if (colon2 > 0) sigs[h] = substr(rest, colon2 + 1)
+				}
+			}
+			close(sigfile)
+		}
+		{
+			count++
+			escaped = 0
+			hash = $1
+			if (substr(hash, 1, 1) == "\\") {
+				hash = substr($1, 2)
+				escaped = 1
+			}
+			if (hash in sigs) {
+				fpath = substr($0, length($1) + 3)
+				if (escaped) {
+					gsub(/\\\\/, "\001", fpath)
+					gsub(/\\n/,   "\n",  fpath)
+					gsub(/\001/,  "\\",  fpath)
+				}
+				print fpath "\t" hash "\t" sigs[hash]
+			}
+			if (pfile != "" && count % 500 == 0) {
+				print count > pfile
+				close(pfile)
+			}
+		}
+		END {
+			if (pfile != "" && count > 0) {
+				print count > pfile
+				close(pfile)
+			}
+		}
+		' "$_hash_out"
+		command rm -f "$_hash_out"
+		# Check lifecycle sentinels after Linux hash batch (Phase 5)
+		if [ -n "$_w_scanid" ]; then
+			local _sentinel_rc
+			_lifecycle_check_sentinels "$_w_scanid"
+			_sentinel_rc=$?
+			if [ "$_sentinel_rc" -eq 1 ]; then
+				exit 3  # abort
+			fi
+			if [ "$_sentinel_rc" -eq 4 ]; then
+				exit 4  # stop — stage granularity, no per-chunk checkpoint
+			fi
+			# _scan_pid = actual scan process PID (BASHPID); safe in background mode
+			_lifecycle_check_parent "${_scan_pid:-$$}" || exit 5  # orphaned
+		fi
+	fi
+}
+
+_hex_csig_batch_worker() {
+	# Self-contained merged HEX+CSIG batch scanner for a chunk of files.
+	# Runs in a subshell (backgrounded by caller).
+	# Outputs tab-delimited filepath\tsigname hit pairs to stdout.
+	# Phase 1: batch hex extraction (shared buffer)
+	# Phase 2: HEX pattern matching (literal + wildcard)
+	# Phase 3: CSIG pattern matching (literal fan-out + wildcard + rule eval)
+	local _chunk="$1" _depth="$2"
+	local _hex_literals="$3" _hex_regexes="$4" _hex_sigmap="$5"
+	local _csig_batch_compiled="${6:-}" _csig_lit="${7:-}" _csig_wc="${8:-}" _csig_uni="${9:-}"
+	local _progress_file="${10:-}"
+	local _chunk_size="${11:-0}"
+	local _w_scanid="${12:-}"
+	local _chunk_skip="${13:-0}"
+
+	local _wid="${_chunk##*.}"
+
+	# Chunk counter for checkpoint tracking and chunk-skip
+	local _chunk_count=0
+
+	# EXIT trap: clean up .hcb temp files on any exit path (normal, abort, orphan)
+	# $$ in subshell = parent PID — intentional (temp files grouped under parent namespace)
+	trap 'command rm -f "$tmpdir"/.hcb.$$.*' EXIT
+
+	# Preload hex sigmap into associative array (eliminates awk fork per HEX hit)
+	# local -A safe here: runs in backgrounded subshell, not sourced-from-function
+	# context (see CLAUDE.md Bash 4.1+ Floor)
+	local -A _sigmap_cache=()
+	if [ -s "$_hex_sigmap" ]; then
+		local _spat _sname
+		while IFS=$'\t' read -r _spat _sname; do
+			_sigmap_cache["$_spat"]="$_sname"
+		done < "$_hex_sigmap"
+	fi
+
+	# Defense-in-depth: caller validates, but guard against direct invocation.
+	# Floor 1024, ceiling 20480; non-integer → default 10240.
+	if ! [[ "$_chunk_size" =~ ^[0-9]+$ ]]; then
+		_chunk_size=10240
+	elif [ "$_chunk_size" -lt 1024 ]; then
+		_chunk_size=1024
+	elif [ "$_chunk_size" -gt 20480 ]; then
+		_chunk_size=20480
+	fi
+
+	# Preload universal subsig IDs (hoisted — shared across all micro-chunks)
+	local _uni_sids=()
+	if [ -n "${_csig_batch_compiled:-}" ] && [ -s "${_csig_batch_compiled:-}" ]; then
+		if [ -n "${_csig_uni:-}" ] && [ -s "${_csig_uni:-}" ]; then
+			local _usid
+			while IFS= read -r _usid; do
+				_uni_sids[$_usid]=1
+			done < "$_csig_uni"
+		fi
+	fi
+
+	# Create CSIG literal temp files once (hoisted — shared across all micro-chunks)
+	local _lit_pats="" _lit_lkup=""
+	if [ -n "${_csig_batch_compiled:-}" ] && [ -s "${_csig_batch_compiled:-}" ]; then
+		if [ -n "${_csig_lit:-}" ] && [ -s "${_csig_lit:-}" ]; then
+			_lit_pats=$(mktemp "$tmpdir/.csig_lp.$$.XXXXXX")
+			_lit_lkup=$(mktemp "$tmpdir/.csig_ll.$$.XXXXXX")
+			command cut -f2 "$_csig_lit" > "$_lit_pats"
+			awk -F'\t' '{print $2 "\t" $1}' "$_csig_lit" > "$_lit_lkup"
+		fi
+	fi
+
+	# Micro-chunk outer loop
+	local _global_idx=0 _batch_hex _idx _line _total_files
+	local -a _names=()
+	local -A _loaded_sids=()
+
+	# Helper: check if SID matched on a given file line number
+	# Hoisted before loop — _uni_sids and _loaded_sids are both in enclosing scope
+	_check_sid_match() {
+		local __sid="$1" __linenum="$2"
+		[ -n "${_uni_sids[$__sid]:-}" ] && return 0
+		[ -n "${_loaded_sids[${__sid}:${__linenum}]+set}" ]
+	}
+
+	# Validate chunk-skip is numeric; default to 0 if not
+	if ! [[ "$_chunk_skip" =~ ^[0-9]+$ ]]; then
+		_chunk_skip=0
+	fi
+
+	exec 3< "$_chunk"  # FD 3 reserved for chunk reader — inner pipelines must not use FD 3
+	while :; do
+		_batch_hex=$(mktemp "$tmpdir/.hcb.$$.XXXXXX")
+		_names=()
+		_idx=0
+
+		# Phase 1: Batch hex extraction (up to _chunk_size files)
+		_chunk_count=$((_chunk_count + 1))
+		if [ "$_chunk_count" -le "$_chunk_skip" ]; then
+			# Chunk-skip: read files from FD to advance position, but skip hex extraction
+			while IFS= read -r _line <&3; do
+				[ -f "$_line" ] && [ -r "$_line" ] || continue
+				_idx=$((_idx + 1))
+				if [ -n "$_progress_file" ] && (((_global_idx + _idx) % 100 == 0)); then
+					echo "$((_global_idx + _idx))" > "$_progress_file"
+				fi
+				[ "$_idx" -ge "$_chunk_size" ] && break
+			done
+			if [ "$_idx" -eq 0 ]; then
+				command rm -f "$_batch_hex"
+				break
+			fi
+			_global_idx=$((_global_idx + _idx))
+			[ -n "$_progress_file" ] && echo "$_global_idx" > "$_progress_file"
+			command rm -f "$_batch_hex"
+			continue
+		fi
+		while IFS= read -r _line <&3; do
+			[ -f "$_line" ] && [ -r "$_line" ] || continue
+			_names[_idx]="$_line"
+			_idx=$((_idx + 1))
+			_hex_extract_file "$_line" "$_depth"
+			printf '\n'
+			if [ -n "$_progress_file" ] && (((_global_idx + _idx) % 100 == 0)); then
+				echo "$((_global_idx + _idx))" > "$_progress_file"
+			fi
+			[ "$_idx" -ge "$_chunk_size" ] && break
+		done > "$_batch_hex"
+
+		if [ "$_idx" -eq 0 ]; then
+			command rm -f "$_batch_hex"
+			break
+		fi
+		[ -n "$_progress_file" ] && echo "$((_global_idx + _idx))" > "$_progress_file"
+
+		_total_files=$_idx
+
+	# Phase 2: HEX pattern matching
+	if [ -s "$_hex_literals" ]; then
+		local _hit_linenum _hit_pat _hit_name
+		while IFS=: read -r _hit_linenum _hit_pat; do
+			local _fnum=$((_hit_linenum - 1))
+			if [ -n "${_names[$_fnum]+set}" ]; then
+				_hit_name=${_sigmap_cache["$_hit_pat"]:-}
+				if [ -n "$_hit_name" ]; then
+					printf '%s\t%s\n' "${_names[$_fnum]}" "$_hit_name"
+				fi
+				_names[_fnum]=""
+			fi
+		done < <(grep -Fno -f "$_hex_literals" "$_batch_hex" 2>/dev/null | awk -F: '!seen[$1]++')  # grep stderr: empty pattern file or no match
+	fi
+	if [ -s "$_hex_regexes" ]; then
+		local _orig_pat _ere_pat
+		while IFS=$'\t' read -r _orig_pat _ere_pat; do
+			local _hit_linenum2 _
+			while IFS=: read -r _hit_linenum2 _; do
+				local _fnum2=$((_hit_linenum2 - 1))
+				if [ -n "${_names[$_fnum2]+set}" ] && [ -n "${_names[$_fnum2]}" ]; then
+					_hit_name=${_sigmap_cache["$_orig_pat"]:-}
+					if [ -n "$_hit_name" ]; then
+						printf '%s\t%s\n' "${_names[$_fnum2]}" "$_hit_name"
+					fi
+					_names[_fnum2]=""
+				fi
+			done < <(grep -Eno "$_ere_pat" "$_batch_hex" 2>/dev/null | awk -F: '!seen[$1]++')  # grep stderr: malformed ERE is non-fatal
+		done < "$_hex_regexes"
+	fi
+
+	# Phase 3: CSIG pattern matching (batch approach)
+	if [ -n "$_csig_batch_compiled" ] && [ -s "$_csig_batch_compiled" ]; then
+		local _match_dir
+		_match_dir=$(mktemp -d "$tmpdir/.csig_mtx.$$.XXXXXX")
+
+		# Tier 1: Literal pass — single grep -Fno, awk fan-out to per-SID files
+		if [ -n "$_lit_pats" ] && [ -s "$_lit_pats" ]; then
+
+			# grep stderr: empty pattern file or no match — safe to ignore
+			grep -Fno -f "$_lit_pats" "$_batch_hex" 2>/dev/null |
+				awk -F: -v lkup="$_lit_lkup" -v outdir="$_match_dir" '
+				BEGIN {
+					while ((getline line < lkup) > 0) {
+						idx = index(line, "\t")
+						pat = substr(line, 1, idx - 1)
+						sid = substr(line, idx + 1)
+						if (pat in pat2sids)
+							pat2sids[pat] = pat2sids[pat] "," sid
+						else
+							pat2sids[pat] = sid
+					}
+				}
+				{
+					linenum = $1
+					pat = substr($0, length($1) + 2)
+					if (pat in pat2sids) {
+						n = split(pat2sids[pat], sids, ",")
+						for (i = 1; i <= n; i++) {
+							sid = sids[i]
+							key = sid SUBSEP linenum
+							if (!(key in seen)) {
+								seen[key] = 1
+								print linenum >> (outdir "/" sid)
+							}
+						}
+					}
+				}' || true  # safe: no match is valid
+
+		fi
+
+		# Tier 2: Wildcard pass — one grep -En per ERE
+		if [ -n "$_csig_wc" ] && [ -s "$_csig_wc" ]; then
+			local _wsid _were
+			while IFS=$'\t' read -r _wsid _were; do
+				# grep stderr: malformed ERE is non-fatal — safe to ignore
+				grep -En "$_were" "$_batch_hex" 2>/dev/null |
+					command cut -d: -f1 | command sort -un >> "${_match_dir}/${_wsid}" || true  # safe: no match is valid
+			done < "$_csig_wc"
+		fi
+
+		# Preload SID match files into associative array for O(1) lookup
+		# (eliminates grep -qFx fork per candidate-element pair in rule evaluation)
+		# MUST reset per micro-chunk — stale SID data from prior chunks causes false hits
+		# local -A declared once before the loop; bare =() reliably clears on bash 4.1+
+		_loaded_sids=()
+		local _sid_file _sid_name _sid_ln
+		for _sid_file in "$_match_dir"/*; do
+			[ -f "$_sid_file" ] || continue
+			_sid_name="${_sid_file##*/}"
+			while IFS= read -r _sid_ln; do
+				_loaded_sids["${_sid_name}:${_sid_ln}"]=1
+			done < "$_sid_file"
+		done
+
+		# Rule evaluation: iterate rules in source order (first-match-wins)
+		local _signame _rtype _threshold _rule_spec
+		while IFS=$'\t' read -r _signame _rtype _threshold _rule_spec; do
+			[ -z "$_signame" ] && continue
+			local _elements=()
+			IFS=',' read -ra _elements <<< "$_rule_spec"
+
+			case "$_rtype" in
+			single)
+				local _sid="${_elements[0]}"
+				if [ -n "${_uni_sids[$_sid]:-}" ]; then
+					local _fn
+					for (( _fn=1; _fn<=_total_files; _fn++ )); do
+						local _fi=$((_fn - 1))
+						[ -z "${_names[$_fi]:-}" ] && continue
+						printf '%s\t%s\n' "${_names[$_fi]}" "$_signame"
+						_names[$_fi]=""
+					done
+				elif [ -s "${_match_dir}/${_sid}" ]; then
+					local _fnum3
+					while IFS= read -r _fnum3; do
+						local _fidx=$((_fnum3 - 1))
+						[ -z "${_names[$_fidx]:-}" ] && continue
+						printf '%s\t%s\n' "${_names[$_fidx]}" "$_signame"
+						_names[$_fidx]=""
+					done < "${_match_dir}/${_sid}"
+				fi
+				;;
+
+			and|group)
+				# Build candidate set from first non-universal plain SID
+				local _cand_file="" _ei
+				for (( _ei=0; _ei<${#_elements[@]}; _ei++ )); do
+					local _elem="${_elements[$_ei]}"
+					case "$_elem" in
+					or:*) continue ;;
+					*)
+						if [ -n "${_uni_sids[$_elem]:-}" ]; then
+							continue
+						fi
+						if [ -s "${_match_dir}/${_elem}" ]; then
+							_cand_file="${_match_dir}/${_elem}"
+							break
+						else
+							_cand_file="__none__"
+							break
+						fi
+						;;
+					esac
+				done
+
+				[ "$_cand_file" == "__none__" ] && continue
+
+				# All-universal/all-OR: every file is a candidate
+				if [ -z "$_cand_file" ]; then
+					_cand_file=$(mktemp "$tmpdir/.csig_all.$$.XXXXXX")
+					seq 1 "$_total_files" > "$_cand_file"
+				fi
+
+				[ ! -s "$_cand_file" ] && continue
+
+				# Filter candidates through all elements
+				local _fnum4
+				while IFS= read -r _fnum4; do
+					local _fidx4=$((_fnum4 - 1))
+					[ -z "${_names[$_fidx4]:-}" ] && continue
+
+					local _pass=1 _elem2
+					for _elem2 in "${_elements[@]}"; do
+						case "$_elem2" in
+						or:*)
+							local _ospec="${_elem2#or:}"
+							local _othresh="${_ospec%%:*}"
+							local _osids_str="${_ospec#*:}"
+							local _osids=()
+							IFS='+' read -ra _osids <<< "$_osids_str"
+							local _ocount=0 _os
+							for _os in "${_osids[@]}"; do
+								if _check_sid_match "$_os" "$_fnum4"; then
+									_ocount=$((_ocount + 1))
+									[ "$_ocount" -ge "$_othresh" ] && break
+								fi
+							done
+							if [ "$_ocount" -lt "$_othresh" ]; then
+								_pass=0; break
+							fi
+							;;
+						*)
+							if ! _check_sid_match "$_elem2" "$_fnum4"; then
+								_pass=0; break
+							fi
+							;;
+						esac
+					done
+
+					if [ "$_pass" -eq 1 ]; then
+						printf '%s\t%s\n' "${_names[$_fidx4]}" "$_signame"
+						_names[$_fidx4]=""
+					fi
+				done < "$_cand_file"
+
+				command rm -f "$tmpdir"/.csig_all."$$".* 2>/dev/null  # safe: temp only exists for all-universal case
+				;;
+
+			or)
+				local _or_merge _elem
+				_or_merge=$(mktemp "$tmpdir/.csig_or.$$.XXXXXX")
+
+				for _elem in "${_elements[@]}"; do
+					if [ -n "${_uni_sids[$_elem]:-}" ]; then
+						seq 1 "$_total_files"
+					elif [ -s "${_match_dir}/${_elem}" ]; then
+						cat "${_match_dir}/${_elem}"
+					fi
+				done | sort -n | uniq -c | awk -v thresh="$_threshold" \
+					'$1 >= thresh {print $2}' > "$_or_merge"
+
+				if [ -s "$_or_merge" ]; then
+					local _fnum5
+					while IFS= read -r _fnum5; do
+						local _fidx5=$((_fnum5 - 1))
+						[ -z "${_names[$_fidx5]:-}" ] && continue
+						printf '%s\t%s\n' "${_names[$_fidx5]}" "$_signame"
+						_names[$_fidx5]=""
+					done < "$_or_merge"
+				fi
+				command rm -f "$_or_merge"
+				;;
+			esac
+		done < "$_csig_batch_compiled"
+
+		command rm -rf "$_match_dir"
+	fi
+
+	command rm -f "$_batch_hex"
+	_global_idx=$((_global_idx + _idx))
+
+	# Check lifecycle sentinels at micro-chunk boundary (Phase 5 + Phase 14)
+	if [ -n "$_w_scanid" ]; then
+		local _sentinel_rc
+		_lifecycle_check_sentinels "$_w_scanid"
+		_sentinel_rc=$?
+		if [ "$_sentinel_rc" -eq 1 ]; then
+			exit 3  # abort (kill) — no checkpoint
+		fi
+		if [ "$_sentinel_rc" -eq 4 ]; then
+			# Stop: write per-worker checkpoint, then exit 4
+			local _wp_file="$sessdir/scan.wp.$_w_scanid.$_wid"
+			local _wp_tmp="$_wp_file.tmp"
+			command cat > "$_wp_tmp" <<WP_EOF
+#LMD_WP:v1
+chunks_completed=$_chunk_count
+WP_EOF
+			command mv -f "$_wp_tmp" "$_wp_file"
+			exit 4  # stop with checkpoint
+		fi
+		if [ "$_sentinel_rc" -eq 2 ]; then
+			# Pause: sleep-loop checking abort every 2s; auto-resume on duration expiry
+			while [ -f "$tmpdir/.pause.$_w_scanid" ]; do
+				_lifecycle_check_sentinels "$_w_scanid"
+				local _pause_rc=$?
+				if [ "$_pause_rc" -eq 1 ]; then
+					exit 3  # abort during pause
+				fi
+				if [ "$_pause_rc" -eq 4 ]; then
+					# Stop during pause: write checkpoint, then exit
+					local _wp_file_p="$sessdir/scan.wp.$_w_scanid.$_wid"
+					local _wp_tmp_p="$_wp_file_p.tmp"
+					command cat > "$_wp_tmp_p" <<WP_EOF2
+#LMD_WP:v1
+chunks_completed=$_chunk_count
+WP_EOF2
+					command mv -f "$_wp_tmp_p" "$_wp_file_p"
+					exit 4
+				fi
+				# Read duration from sentinel; auto-resume if expired
+				local _p_epoch=0 _p_duration=0 _p_key _p_val
+				while IFS='=' read -r _p_key _p_val; do
+					case "$_p_key" in
+						epoch) _p_epoch="$_p_val" ;;
+						duration) _p_duration="$_p_val" ;;
+					esac
+				done < "$tmpdir/.pause.$_w_scanid" 2>/dev/null  # safe: sentinel may vanish between check and read
+				if [ "$_p_duration" -gt 0 ] 2>/dev/null; then  # safe: non-numeric falls through
+					local _p_now
+					_p_now=$(command date +%s)
+					if [ "$_p_now" -ge $((_p_epoch + _p_duration)) ]; then
+						# Duration expired — auto-resume
+						command rm -f "$tmpdir/.pause.$_w_scanid"
+						break
+					fi
+				fi
+				command sleep 2
+			done
+		fi
+		# Check parent liveness — _scan_pid = actual scan PID (BASHPID); safe in background mode
+		_lifecycle_check_parent "${_scan_pid:-$$}" || exit 5  # orphaned
+	fi
+
+	done
+	exec 3<&-
+
+	# Cleanup hoisted CSIG temp files
+	if [ -n "$_lit_pats" ]; then command rm -f "$_lit_pats"; fi
+	if [ -n "$_lit_lkup" ]; then command rm -f "$_lit_lkup"; fi
+}
+
+scan_strlen() {
+	local type="$1"
+	local file="$2"
+	if [ "$os_freebsd" == "1" ]; then
+		eout "{strlen} skipped on FreeBSD (wc -L not available — GNU extension)" 1
+		return 0
+	fi
+	if [ "$string_length_scan" == "1" ] && [ "$type" == "file" ]; then
+		flen=$($wc -L "$file" 2> /dev/null | awk '{print$1}')
+		if [ "$flen" -ge "$string_length" ]; then
+			eout "{strlen} malware string length hit ${flen}b on $file" 1
+			local _strlen_manifest
+			_strlen_manifest=$(mktemp "$tmpdir/.strlen_manifest.$$.XXXXXX")
+			printf '%s\t{SA}stat.strlength\n' "$file" > "$_strlen_manifest"
+			_flush_hit_batch "$_strlen_manifest" "strlen"
+			command rm -f "$_strlen_manifest"
+		fi
+	elif [ "$string_length_scan" == "1" ] && [ "$type" == "list" ]; then
+		list=$(mktemp "$tmpdir/.strlen.flist.XXXXXX")
+		command cp "$file" "$list"
+		xargs -d '\n' $wc -L < "$list" 2> /dev/null | grep -vw total >> "$list.strlen"
+		awk "{if (\$1>=$string_length) print\$2}" "$list.strlen" >> "$list.hits"
+		if [ -s "$list.hits" ]; then
+			while IFS= read -r i; do
+				[ -f "$i" ] && eout "{strlen} malware string length hit on $i" 1
+			done < "$list.hits"
+			local _strlen_manifest
+			_strlen_manifest=$(mktemp "$tmpdir/.strlen_manifest.$$.XXXXXX")
+			while IFS= read -r i; do
+				[ -f "$i" ] && printf '%s\t{SA}stat.strlength\n' "$i"
+			done < "$list.hits" > "$_strlen_manifest"
+			_flush_hit_batch "$_strlen_manifest" "strlen"
+			command rm -f "$_strlen_manifest"
+		fi
+		command rm -f "$list" "$list.strlen" "$list.hits"
+	fi
+}
+
+
+_hex_extract_file() {
+	# Extract hex content from a file using od, output contiguous hex string.
+	# Single source of truth for the od pipeline (replaces 4 duplicated branches).
+	local _file="$1" _depth="$2"
+	if [ "$os_freebsd" == "1" ]; then
+		$od -v -N"$_depth" -tx1 "$_file" | cut -c12-256 | tr -d ' \n'
+	else
+		$od -v -w64 -N"$_depth" -tx1 "$_file" | cut -c9-256 | tr -d '\n '
+	fi
+}

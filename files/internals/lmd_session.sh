@@ -1,0 +1,729 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# shellcheck disable=SC1090,SC1091
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# Session format, report rendering, and log management
+
+# Source guard
+[[ -n "${_LMD_SESSION_LOADED:-}" ]] && return 0 2>/dev/null
+_LMD_SESSION_LOADED=1
+
+# _session_fmt_elapsed value — normalize elapsed time to human-readable (accepts raw seconds or legacy Xd:Xh:Xm:Xs)
+_session_fmt_elapsed() {
+	local _val="$1" _secs
+	# Strip trailing 's' if present (e.g., "342s" → "342")
+	_val="${_val%s}"
+	case "$_val" in
+		""|"-"|"n/a"|"n/") printf 'n/a'; return ;;
+	esac
+	# Legacy monitor format: Xd:Xh:Xm:X (trailing s already stripped)
+	local _legacy_pat='^([0-9]+)d:([0-9]+)h:([0-9]+)m:([0-9]+)$'
+	if [[ "$_val" =~ $_legacy_pat ]]; then
+		_secs=$(( ${BASH_REMATCH[1]}*86400 + ${BASH_REMATCH[2]}*3600 + ${BASH_REMATCH[3]}*60 + ${BASH_REMATCH[4]} ))
+	elif [[ "$_val" =~ ^[0-9]+$ ]]; then
+		_secs="$_val"
+	else
+		printf 'n/a'; return
+	fi
+	if [ "$_secs" -lt 60 ]; then
+		printf '%ds' "$_secs"
+	elif [ "$_secs" -lt 3600 ]; then
+		printf '%dm %ds' "$((_secs / 60))" "$((_secs % 60))"
+	else
+		printf '%dh %dm' "$((_secs / 3600))" "$(( (_secs % 3600) / 60 ))"
+	fi
+}
+
+# _session_is_tsv file — returns 0 if file is TSV format (line 1 starts with #LMD:v1)
+_session_is_tsv() {
+	local _file="$1"
+	[ -f "$_file" ] || return 1
+	local _first_line
+	IFS= read -r _first_line < "$_file"
+	case "$_first_line" in
+		"#LMD:v1"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# _session_read_meta file — read TSV metadata header into caller's scope; clobbers _fmt
+# shellcheck disable=SC2034
+_session_read_meta() {
+	local _file="$1"
+	[ -f "$_file" ] || return 1
+	# Single read of line 1 — avoids here-string temp file on bash 4.1
+	IFS=$'\t' read -r _fmt _alert_type scanid _hostname hrspath days \
+		scan_start_hr scan_end_hr scan_et file_list_et \
+		tot_files tot_hits tot_cl \
+		_scanner_ver _sig_ver _hashtype _engine _quar_enabled _hostid \
+		< "$_file"
+	datestamp="${scanid%%.*}"
+}
+
+# _session_write_header file alert_type — write 19-field TSV metadata header
+# Reads from scan context variables set by the calling context.
+# Unknown fields use "-" sentinel (monitor mode partial header).
+_session_write_header() {
+	local _file="$1" _alert_type="$2"
+	local _hostname _hostid_val _sig_ver_val _engine_val
+	_hostname=$(hostname)
+	_hostid_val="${hostid:--}"
+	_sig_ver_val="${sig_version:-$(cat "$sigdir/maldet.sigs.ver" 2>/dev/null || echo "-")}"  # safe: fallback provides sentinel when sigs.ver missing
+	# Determine engine — scan_clamscan=1 means ClamAV was used as the primary engine.
+	# Native engine always runs hash+hex passes; ClamAV replaces them when enabled.
+	# Both never run simultaneously in current architecture.
+	if [ "$scan_clamscan" == "1" ]; then
+		_engine_val="clamav"
+	else
+		_engine_val="native"
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"#LMD:v1" \
+		"$_alert_type" \
+		"${scanid:-$datestamp.$$}" \
+		"$_hostname" \
+		"${hrspath:--}" \
+		"${days:--}" \
+		"${scan_start_hr:--}" \
+		"${scan_end_hr:--}" \
+		"${scan_et:--}" \
+		"${file_list_et:--}" \
+		"${tot_files:--}" \
+		"${tot_hits:--}" \
+		"${tot_cl:--}" \
+		"${lmd_version:--}" \
+		"$_sig_ver_val" \
+		"${_effective_hashtype:--}" \
+		"$_engine_val" \
+		"${quarantine_hits:-0}" \
+		"$_hostid_val" \
+		> "$_file"
+}
+
+# _session_resolve scanid — return session data path (TSV first, then legacy hits, then compressed)
+_session_resolve() {
+	local _sid="$1"
+	local _compressed
+	if [ -f "$sessdir/session.tsv.$_sid" ]; then
+		echo "$sessdir/session.tsv.$_sid"
+	elif [ -f "$sessdir/session.hits.$_sid" ]; then
+		echo "$sessdir/session.hits.$_sid"
+	elif _compressed=$(_session_resolve_compressed "$_sid" 2>/dev/null); then  # safe: suppress stderr from missing function during early init
+		echo "$_compressed"
+	fi
+}
+
+# _session_legacy_check — determine whether to generate legacy plaintext files
+# Returns: sets _session_legacy_active to 0 or 1
+# Cache: $sessdir/.session_format (check-once, purge resets)
+_session_legacy_check() {
+	_session_legacy_active=0
+	case "${session_legacy_compat:-auto}" in
+		0) _session_legacy_active=0; return ;;
+		1) _session_legacy_active=1; return ;;
+	esac
+	# auto mode: check cache first
+	if [ -f "$sessdir/.session_format" ]; then
+		local _cached
+		_cached=$(cat "$sessdir/.session_format")
+		case "$_cached" in
+			v1)     _session_legacy_active=0; return ;;
+			legacy) _session_legacy_active=1; return ;;
+		esac
+	fi
+	# No cache: check most recent session file
+	local _latest _latest_file=""
+	for _latest in "$sessdir"/session.[0-9]*; do
+		[ -f "$_latest" ] || continue
+		case "$_latest" in
+			*.tsv.*|*.hits.*|*.html) continue ;;
+		esac
+		_latest_file="$_latest"
+	done
+	if [ -n "$_latest_file" ] && ! _session_is_tsv "$_latest_file"; then
+		echo "legacy" > "$sessdir/.session_format"
+		_session_legacy_active=1
+	else
+		echo "v1" > "$sessdir/.session_format"
+		_session_legacy_active=0
+	fi
+}
+
+# _parse_session_metadata session_file — parse text session header into scan metadata vars
+# shellcheck disable=SC2034
+_parse_session_metadata() {
+	local _sess_file="$1"
+	[ -f "$_sess_file" ] || return 1
+	local _line _key _val
+	while IFS= read -r _line; do
+		# Stop at the first hit entry (sig : filepath) or FILE HIT LIST marker
+		case "$_line" in
+			"FILE HIT LIST:"*) break ;;
+			*" : "*)           break ;;
+		esac
+		# Strip leading/trailing whitespace from value after the label
+		_key="${_line%%:*}"
+		_val="${_line#*:}"
+		# Trim leading spaces from value
+		_val="${_val#"${_val%%[![:space:]]*}"}"
+		case "$_key" in
+			"SCAN ID")
+				scanid="$_val"
+				datestamp="${scanid%%.*}"
+				;;
+			"STARTED")   scan_start_hr="$_val" ;;
+			"COMPLETED") scan_end_hr="$_val" ;;
+			"ELAPSED")
+				# Format: "285s [find: 1s]"
+				local _elapsed_pat='^([0-9]+)s[[:space:]]*\[find:[[:space:]]*([0-9]+)s\]'
+				if [[ "$_val" =~ $_elapsed_pat ]]; then
+					scan_et="${BASH_REMATCH[1]}"
+					file_list_et="${BASH_REMATCH[2]}"
+				fi
+				;;
+			"PATH")          hrspath="$_val" ;;
+			"RANGE")
+				days="${_val%% *}"
+				;;
+			"TOTAL FILES"|"FILES")   tot_files="$_val" ;;
+			"TOTAL HITS"|"HITS")     tot_hits="$_val" ;;
+			"TOTAL CLEANED"|"CLEANED") tot_cl="$_val" ;;
+		"HOST")          _hostname="$_val" ;;
+		esac
+	done < "$_sess_file"
+}
+
+# _resolve_html_for_session session_file — render HTML on-demand; sets caller's _html to temp path or ""
+# Always renders fresh from current templates (no persistent .html files)
+_resolve_html_for_session() {
+	local _sess="$1"
+	_html=""
+	if [ ! -f "$_sess" ]; then
+		return 0
+	fi
+	# Extract scan ID from filename, handling both legacy and TSV naming
+	local _sid _basename
+	_basename="${_sess##*/}"
+	case "$_basename" in
+		session.tsv.*)  _sid="${_basename#session.tsv.}" ;;
+		session.hits.*) _sid="${_basename#session.hits.}" ;;
+		session.*)      _sid="${_basename#session.}" ;;
+	esac
+	# Populate scan metadata: TSV uses _session_read_meta, text uses _parse_session_metadata
+	if _session_is_tsv "$_sess"; then
+		_session_read_meta "$_sess"
+	else
+		_parse_session_metadata "$_sess"
+	fi
+	local _hits
+	_hits=$(_session_resolve "$_sid")
+	# If no separate hits file found, the input itself may contain hits
+	if [ -z "$_hits" ] && [ -f "$_sess" ]; then
+		_hits="$_sess"
+	fi
+	local _manifest _tpl_dir
+	_tpl_dir="${ALERT_TEMPLATE_DIR:-$libpath/alert}"
+	_manifest=$(mktemp "$tmpdir/.alert_manifest.XXXXXX")
+	# Parse hits if available (empty manifest for clean scans is valid)
+	if [ -n "$_hits" ] && [ -f "$_hits" ] && [ -s "$_hits" ]; then
+		_lmd_parse_hitlist "$_hits" > "$_manifest"
+	fi
+	# Render HTML to temp file — clean scans get celebration, dirty get stat blocks
+	_html=$(mktemp "$tmpdir/.alert_html.XXXXXX")
+	_lmd_render_html "$_manifest" "scan" "$_tpl_dir" > "$_html"
+	command rm -f "$_manifest"
+}
+
+view_report() {
+	local rid="$1"
+
+	# HOOKS MODE
+	if [ "$rid" == "hooks" ]; then
+		local _hooks_duration="${2:-24h}" _hooks_mode="${3:-}"
+		local _hook_log="$sessdir/hook.hits.log"
+		if [ ! -f "$_hook_log" ] || [ ! -s "$_hook_log" ]; then
+			eout "{report} no hook scan activity recorded" 1
+			return 0
+		fi
+		# Parse duration to seconds
+		local _dur_val _dur_unit _dur_secs
+		_dur_val="${_hooks_duration%[hdm]}"
+		_dur_unit="${_hooks_duration##*[0-9]}"
+		case "$_dur_unit" in
+			h) _dur_secs=$((_dur_val * 3600)) ;;
+			d) _dur_secs=$((_dur_val * 86400)) ;;
+			m) _dur_secs=$((_dur_val * 60)) ;;
+			*) _dur_secs=$((_dur_val * 3600)) ;;  # default hours
+		esac
+		local _cutoff
+		_cutoff=$(($(date +%s) - _dur_secs))
+
+		# Filter hook hits by time (field 13) and optionally mode (field 12)
+		local _filtered
+		_filtered=$(mktemp "$tmpdir/.hook_report.XXXXXX")
+		if [ -n "$_hooks_mode" ]; then
+			awk -F'\t' -v cutoff="$_cutoff" -v mode="$_hooks_mode" \
+				'!/^#/ && NF > 0 && $13 >= cutoff && $12 == mode' \
+				"$_hook_log" > "$_filtered"
+		else
+			awk -F'\t' -v cutoff="$_cutoff" \
+				'!/^#/ && NF > 0 && $13 >= cutoff' \
+				"$_hook_log" > "$_filtered"
+		fi
+
+		local _hit_count
+		_hit_count=$($wc -l < "$_filtered")
+		if [ "${_hit_count:-0}" -eq 0 ]; then
+			eout "{report} no hook scan activity in last $_hooks_duration" 1
+			command rm -f "$_filtered"
+			return 0
+		fi
+
+		printf '\n%-20s %-10s %-35s %s\n' "TIME" "MODE" "SIGNATURE" "FILE"
+		printf '%-20s %-10s %-35s %s\n' "----" "----" "---------" "----"
+
+		# Display hits: sig=$1, filepath=$2, hook_mode=$12, timestamp=$13
+		# Single awk pass — avoids 3 subshell forks per line (S-PERF-001)
+		while IFS=$'\t' read -r _awk_ts _awk_mode _awk_sig _awk_file; do
+			[ -z "$_awk_sig" ] && continue
+			local _time_display
+			_time_display=$(date -d "@${_awk_ts}" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "$_awk_ts")  # safe: fallback to raw epoch on date parse failure
+			printf '%-20s %-10s %-35s %s\n' "$_time_display" "$_awk_mode" "$_awk_sig" "$_awk_file"
+		done < <(awk -F'\t' '{printf "%s\t%s\t%s\t%s\n", $13, $12, $1, $2}' "$_filtered")
+
+		printf '\nTotal: %s hook detections in last %s\n' "$_hit_count" "$_hooks_duration"
+		command rm -f "$_filtered"
+		return 0
+	fi
+
+	# TSV format restriction
+	# TSV is only supported for active/hooks list commands, not report list or individual reports
+	if [ "${_report_format:-}" = "tsv" ] && [ "$rid" != "active" ] && [ "$rid" != "hooks" ]; then
+		echo "maldet($$): TSV format is only supported for active and hooks list commands (--report active, -L, --report hooks)" >&2
+		return 1
+	fi
+
+	# LIST MODE
+	if [ "$rid" == "list" ]; then
+		if [ "${_report_format:-}" = "json" ]; then
+			_lmd_render_json_list
+			exit 0
+		fi
+		# Prepend active scans if any exist (unified view)
+		if _lifecycle_list_active "text" "0" 2>/dev/null; then
+			echo
+		fi
+		# Show stopped/checkpointed scans that can be resumed
+		if _lifecycle_list_stopped 2>/dev/null; then  # safe: stderr "No stopped scans." suppressed on empty result
+			echo
+		fi
+		tmpf=$(mktemp "$tmpdir/.areps.XXXXXX")
+		local _index_file="$sessdir/session.index"
+		local _seen_ids=""
+		# Rebuild index from TSV files if missing (first call on upgraded server)
+		if [ ! -f "$_index_file" ]; then
+			_session_index_rebuild
+		fi
+		if [ -f "$_index_file" ]; then
+			# Fast path: read completed scans from session.index (O(1) vs O(n) per-file)
+			local _ix_scanid _ix_epoch _ix_started_hr _ix_elapsed
+			local _ix_tot_files _ix_tot_hits _ix_tot_cl _ix_tot_quar _ix_path
+			# v1.1+v1.2 trailing fields read-through (unused by text renderer but
+			# named so they don't spill into earlier vars on newer 11/14-field rows)
+			local _ix_sig_version _ix_quar_enabled
+			local _ix_completed_hr _ix_engine _ix_hashtype
+			while IFS=$'\t' read -r _ix_scanid _ix_epoch _ix_started_hr _ix_elapsed \
+					_ix_tot_files _ix_tot_hits _ix_tot_cl _ix_tot_quar _ix_path \
+					_ix_sig_version _ix_quar_enabled \
+					_ix_completed_hr _ix_engine _ix_hashtype; do
+				# Skip header and empty lines
+				case "$_ix_scanid" in "#"*|"") continue ;; esac
+				# Backward compat: old 8-field index has path in field 8 (no quar field)
+				if [ -z "$_ix_path" ] && [ -n "$_ix_tot_quar" ]; then
+					_ix_path="$_ix_tot_quar"
+					_ix_tot_quar="0"
+				fi
+				_seen_ids="$_seen_ids $_ix_scanid"
+				local _time_display _etime _cl _quar
+				# Strip timezone offset for column alignment
+				_time_display=$(echo "$_ix_started_hr" | awk '{print $1,$2,$3,$4}')
+				_etime=$(_session_fmt_elapsed "$_ix_elapsed")
+				_cl="${_ix_tot_cl:-0}"
+				[ "$_cl" = "-" ] && _cl="0"
+				_quar="${_ix_tot_quar:-0}"
+				[ "$_quar" = "-" ] && _quar="0"
+				echo "$_ix_epoch | $_time_display | $_ix_scanid | $_etime | ${_ix_tot_files:--} | ${_ix_tot_hits:--} | $_quar | $_cl | ${_ix_path:--}" >> "$tmpf"
+			done < "$_index_file"
+		fi
+		# Fallback: per-file glob for sessions not in the index
+		# Pass 1: TSV session files not in the index
+		for file in "$sessdir"/session.tsv.[0-9]*; do
+			[ -f "$file" ] || continue
+			local _sid="${file##*session.tsv.}"
+			case "$_seen_ids" in *" $_sid"*) continue ;; esac
+			_session_read_meta "$file"
+			if [ -n "$scanid" ] && [ "$scan_start_hr" != "-" ]; then
+				local _time_u _etime _time_display
+				_time_u=$(date -d "$scan_start_hr" "+%s" 2>/dev/null)
+				# Strip timezone offset for consistent column alignment with legacy pass
+				_time_display=$(echo "$scan_start_hr" | awk '{print $1,$2,$3,$4}')
+				_etime=$(_session_fmt_elapsed "$scan_et")
+				local _cl="${tot_cl:-0}"
+				[ "$_cl" = "-" ] && _cl="0"
+				local _quar
+				_quar=$(awk -F'\t' '!/^#/ && $3 != "" && $3 != "-" { n++ } END { print n+0 }' "$file")
+				echo "$_time_u | $_time_display | $scanid | $_etime | ${tot_files:--} | ${tot_hits:--} | $_quar | $_cl | ${hrspath:--}" >> "$tmpf"
+				_seen_ids="$_seen_ids $_sid"
+			fi
+		done
+		# Pass 2: Legacy plaintext session files (skip if TSV exists)
+		for file in "$sessdir"/session.[0-9]*; do
+			[ -f "$file" ] || continue
+			case "$file" in *.tsv.*|*.hits.*|*.html) continue ;; esac
+			local _sid="${file##*session.}"
+			case "$_seen_ids" in *" $_sid"*) continue ;; esac
+			_meta=$(command grep -E "^SCAN ID|^(TOTAL )?FILES|^(TOTAL )?HITS|^(TOTAL )?CLEANED|^TIME:|^STARTED:|^ELAPSED|^PATH" "$file")
+			SCANID=$(command grep "SCAN ID" <<< "$_meta" | command sed 's/SCAN ID: *//')
+			FILES=$(command grep -E "^(TOTAL )?FILES" <<< "$_meta" | command sed -e 's/TOTAL FILES: *//' -e 's/FILES: *//')
+			HITS=$(command grep -E "^(TOTAL )?HITS" <<< "$_meta" | command sed -e 's/TOTAL HITS: *//' -e 's/HITS: *//')
+			CLEAN=$(command grep -E "^(TOTAL )?CLEANED" <<< "$_meta" | command sed -e 's/TOTAL CLEANED: *//' -e 's/CLEANED: *//')
+			TIME=$(command grep -E "^TIME|^STARTED" <<< "$_meta" | command sed -e 's/TIME: //' -e 's/STARTED: //' | awk '{print$1,$2,$3,$4}')
+			TIME_U=$(date -d "$TIME" "+%s" 2>/dev/null)
+			ETIME_RAW=$(command grep "ELAPSED" <<< "$_meta" | awk '{print$2}')
+			LPATH=$(command grep "^PATH" <<< "$_meta" | command sed 's/PATH: *//')
+			ETIME=$(_session_fmt_elapsed "$ETIME_RAW")
+			if [ -z "$CLEAN" ]; then
+				CLEAN="0"
+			fi
+			if [ -n "$SCANID" ] && [ -n "$TIME" ]; then
+				# Legacy plaintext sessions have no quarantine count — show "-"
+				echo "$TIME_U | $TIME | $SCANID | $ETIME | ${FILES:--} | ${HITS:--} | - | $CLEAN | ${LPATH:--}" >> "$tmpf"
+			fi
+		done
+		local _sorted _total
+		if [ -f "$tmpf" ] && [ -s "$tmpf" ]; then
+			if [ "$os_freebsd" == "1" ]; then
+				# FreeBSD: ascending order (oldest first), cap with tail
+				_sorted=$(command sort -k1 -n "$tmpf" | command cut -d'|' -f2-)
+			else
+				_sorted=$(command sort -k1 -rn "$tmpf" | command cut -d'|' -f2-)
+			fi
+			_total=$(printf '%s\n' "$_sorted" | command grep -c '^.' || echo 0)
+		else
+			_sorted=""
+			_total=0
+		fi
+		command rm -f "$tmpf"
+		if [ "$_total" -eq 0 ]; then
+			printf 'Scan history (0):\n  No scans found.\n'
+		else
+			if [ "$_total" -le 14 ] || [ "${_list_all:-0}" = "1" ]; then
+				printf 'Scan history (%s):\n' "$_total"
+			else
+				printf 'Scan history (%s total, last 14):\n' "$_total"
+			fi
+			local _display
+			if [ "${_list_all:-0}" = "1" ] || [ "$_total" -le 14 ]; then
+				_display=$(
+					printf ' %s\n' "DATE | SCANID | RUNTIME | FILES | HITS | QUAR | CLEANED | PATH"
+					printf '%s\n' "$_sorted"
+				)
+			else
+				if [ "$os_freebsd" == "1" ]; then
+					# FreeBSD ascending: newest are at the end, use tail
+					_display=$(
+						printf ' %s\n' "DATE | SCANID | RUNTIME | FILES | HITS | QUAR | CLEANED | PATH"
+						printf '%s\n' "$_sorted" | command tail -14
+					)
+				else
+					_display=$(
+						printf ' %s\n' "DATE | SCANID | RUNTIME | FILES | HITS | QUAR | CLEANED | PATH"
+						printf '%s\n' "$_sorted" | command head -14
+					)
+				fi
+			fi
+			if [ "${_list_all:-0}" = "1" ] && [ -t 1 ]; then
+				# standard PAGER convention; only on interactive TTY (guarded by -t 1 above)
+				printf '%s\n' "$_display" | command column -t -s '|' | ${PAGER:-less}
+			else
+				printf '%s\n' "$_display" | command column -t -s '|'
+			fi
+			# Overflow hint (outside column -t so it's not column-aligned)
+			if [ "${_list_all:-0}" != "1" ] && [ "$_total" -gt 14 ]; then
+				printf '  (%s older — maldet -e list --all)\n' "$(( _total - 14 ))"
+			fi
+		fi
+		exit 0
+	fi
+
+	# RESOLVE RID (newest/empty)
+	if [ "$rid" == "newest" ] || [ "$rid" == "latest" ] || [ "$rid" == "" ]; then
+		if [ -f "$sessdir/session.last" ]; then
+			rid=$(cat "$sessdir/session.last")
+		else
+			eout "{report} no recent scan session found" 1
+			exit 1
+		fi
+	fi
+
+	# STATE-AWARE: check for active scan meta
+	local _vr_state
+	_vr_state=$(_lifecycle_detect_state "$rid" 2>/dev/null) || _vr_state=""  # safe: no meta file means scan is not active; fall through to session resolution
+	if [ -n "$_vr_state" ]; then
+		case "$_vr_state" in
+			running|paused|stale)
+				_lifecycle_list_active "${_report_format:-text}" "0" "$rid"
+				return $?
+				;;
+		esac
+	fi
+
+	# DETERMINE EMAIL TARGET
+	local _mailto="${_report_mailto:-}"
+	[ -z "$_mailto" ] && [[ "${2:-}" == *@* ]] && _mailto="$2"
+
+	# JSON FORMAT (early exit, TSV-first resolution)
+	if [ "${_report_format:-}" = "json" ]; then
+		local _json_tmp
+		_json_tmp=$(mktemp "$tmpdir/.json_report.XXXXXX")
+		if [ -f "$sessdir/session.tsv.$rid" ]; then
+			_lmd_render_json "$sessdir/session.tsv.$rid" > "$_json_tmp"
+		elif [ -f "$sessdir/session.$rid" ] || [ -f "$sessdir/session.hits.$rid" ]; then
+			local _sess="" _hits=""
+			[ -f "$sessdir/session.$rid" ] && _sess="$sessdir/session.$rid"
+			[ -f "$sessdir/session.hits.$rid" ] && _hits="$sessdir/session.hits.$rid"
+			_lmd_render_json_legacy "$_sess" "$_hits" > "$_json_tmp"
+		else
+			# Try compressed/archived session
+			local _gz_path
+			_gz_path=$(_session_resolve_compressed "$rid" 2>/dev/null) || _gz_path=""  # safe: missing function during early init
+			if [ -n "$_gz_path" ] && [ -f "$_gz_path" ]; then
+				local _tmp_decomp
+				_tmp_decomp=$(command mktemp "$tmpdir/.session_view.XXXXXX")
+				command gzip -dc "$_gz_path" > "$_tmp_decomp"
+				_lmd_render_json "$_tmp_decomp" > "$_json_tmp"
+				command rm -f "$_tmp_decomp"
+			else
+				command rm -f "$_json_tmp"
+				local _safe_rid="${rid//\"/\\\"}"
+				echo '{"error": "no report found for scan ID '"$_safe_rid"'"}' >&2
+				exit 1
+			fi
+		fi
+		if [ -n "$_mailto" ]; then
+			_alert_deliver_email "$_mailto" "$email_subj" "$_json_tmp" "" "text"
+			eout "{report} JSON report ID $rid sent to $_mailto" 1
+		else
+			cat "$_json_tmp"
+		fi
+		command rm -f "$_json_tmp"
+		exit 0
+	fi
+
+	# RESOLVE SESSION FILE (text/html, legacy-first)
+	local _report_file="" _vr_tmp_session=""
+	if [ -f "$sessdir/session.$rid" ]; then
+		_report_file="$sessdir/session.$rid"
+	elif [ -f "$sessdir/session.tsv.$rid" ]; then
+		_report_file="$sessdir/session.tsv.$rid"
+	else
+		# Try compressed/archived session — decompress to temp for rendering
+		local _gz_path
+		_gz_path=$(_session_resolve_compressed "$rid" 2>/dev/null) || _gz_path=""  # safe: missing function during early init
+		if [ -n "$_gz_path" ] && [ -f "$_gz_path" ]; then
+			_vr_tmp_session=$(command mktemp "$tmpdir/.session_view.XXXXXX")
+			command gzip -dc "$_gz_path" > "$_vr_tmp_session"
+			_report_file="$_vr_tmp_session"
+		else
+			eout "{report} no report found for scan ID $rid" 1
+			exit 1
+		fi
+	fi
+
+	# EMAIL DISPATCH
+	if [ -n "$_mailto" ]; then
+		local _html="" _fmt="${_report_format:-${email_format:-html}}"
+		# Save _fmt before _resolve_html_for_session — _session_read_meta
+		# clobbers _fmt when reading TSV headers
+		local _save_fmt="$_fmt"
+		_resolve_html_for_session "$_report_file"
+		_fmt="$_save_fmt"
+		# Downgrade format when HTML unavailable and cannot be rendered
+		if [ -z "$_html" ] && [ "$_fmt" != "text" ]; then
+			eout "{report} HTML rendering unavailable, sending text format" 1
+			_fmt="text"
+		fi
+		if ! _alert_deliver_email "$_mailto" "$email_subj" "$_report_file" "$_html" "$_fmt"; then
+			eout "{report} no \$mail or \$sendmail binaries found, e-mail alerts disabled." 1
+			exit 1
+		fi
+		eout "{report} report ID $rid sent to $_mailto" 1
+		command rm -f "$_html"  # cleanup rendered HTML tempfile
+		[ -n "$_vr_tmp_session" ] && command rm -f "$_vr_tmp_session"
+		exit 0
+	fi
+
+	# TERMINAL DISPLAY
+	if [ "${_report_format:-}" = "html" ]; then
+		local _html=""
+		_resolve_html_for_session "$_report_file"
+		if [ -n "$_html" ]; then
+			cat "$_html"
+			command rm -f "$_html"
+		else
+			eout "{report} HTML rendering unavailable" 1
+			[ -n "$_vr_tmp_session" ] && command rm -f "$_vr_tmp_session"
+			exit 1
+		fi
+	elif _session_is_tsv "$_report_file"; then
+		# TSV: render text on-demand
+		local _manifest _tpl_dir
+		_tpl_dir="${ALERT_TEMPLATE_DIR:-$libpath/alert}"
+		_manifest=$(mktemp "$tmpdir/.report_manifest.XXXXXX")
+		_session_read_meta "$_report_file"
+		_lmd_parse_hitlist "$_report_file" > "$_manifest"
+		_lmd_set_global_vars "scan"
+		_lmd_compute_summary "$_manifest"
+		_lmd_render_text "$_manifest" "scan" "$_tpl_dir"
+		command rm -f "$_manifest"
+	else
+		cat "$_report_file"
+	fi
+	[ -n "$_vr_tmp_session" ] && command rm -f "$_vr_tmp_session"
+	exit 0
+}
+
+dump_report() {
+	view_report "$1"
+}
+
+# view_report_json [SCANID|list|newest] — backward-compat wrapper; delegates to view_report()
+# shellcheck disable=SC2154
+view_report_json() {
+	_report_format="json"
+	view_report "$1"
+}
+
+view() {
+	echo "Viewing last 50 lines from $maldet_log:"
+	tail -n 50 "$maldet_log"
+}
+
+_inotify_trim_log() {
+	local _trim="$1"
+	local bytes_removed
+	bytes_removed=$(head -n "$_trim" "$inotify_log" 2>/dev/null | $wc -c)
+	tlog_adjust_cursor "inotify" "$tmpdir" "$bytes_removed"
+	local tmplog
+	tmplog=$(mktemp "${inotify_log}.trim.XXXXXX")
+	tail -n +"$((_trim + 1))" "$inotify_log" > "$tmplog" 2>/dev/null
+	cat "$tmplog" > "$inotify_log" 2>/dev/null
+	command rm -f "$tmplog"
+	eout "{mon} inotify log file trimmed"
+}
+
+purge() {
+	_lmd_elog_event "$ELOG_EVT_PURGE_COMPLETED" "warn" "logs and quarantine data purged" "user=$(id -un)"
+	:> "$maldet_log"
+	if [ -f "$inotify_log" ]; then
+		log_size=$($wc -l < "$inotify_log")
+		if [ "$inotify_trim" ] && [ "$log_size" -ge "$inotify_trim" ]; then
+			_inotify_trim_log "$(($log_size - 1000))"
+		fi
+	fi
+	$find "$tmpdir" -maxdepth 1 -type f -delete 2>/dev/null  # dotfiles missed by glob *
+	$find "$tmpdir" -maxdepth 1 -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null  # subdirs
+	$find "$quardir" -maxdepth 1 -type f -delete 2>/dev/null  # safe: empty dir or already-removed files
+	$find "$sessdir" -maxdepth 1 -type f -delete 2>/dev/null  # safe: empty dir or already-removed files
+	eout "{glob} logs and quarantine data cleared by user request (-p)" 1
+}
+
+# _session_render_legacy_text tsv_file outfile — conditionally render legacy plaintext
+_session_render_legacy_text() {
+	local _tsv="$1" _outfile="$2"
+	_session_legacy_check
+	if [ "$_session_legacy_active" != "1" ]; then
+		return 0
+	fi
+	local _manifest _tpl_dir
+	_manifest=$(mktemp "$tmpdir/.alert_manifest.XXXXXX")
+	_tpl_dir="${ALERT_TEMPLATE_DIR:-$libpath/alert}"
+	# Parse TSV hit records (skip header) into the 6-field manifest format
+	# that _lmd_render_text expects: sig filepath quarpath hit_type color hit_type_label
+	awk -F'\t' '!/^#/{
+		sig=$1; fp=$2; qp=$3; ht=$4; htl=$5
+		if (sig == "") next
+		if (qp == "-") qp = ""
+		# Hit type color registry (matches _lmd_parse_hitlist)
+		ht_color["MD5"]  = "#0891b2"; ht_color["HEX"]  = "#dc2626"
+		ht_color["YARA"] = "#d97706"; ht_color["SA"]   = "#16a34a"
+		ht_color["CAV"]  = "#7c3aed"; ht_color["CSIG"] = "#ea580c"
+		ht_color["SHA256"] = "#0d9488"
+		color = (ht in ht_color) ? ht_color[ht] : "#0891b2"
+		printf "%s\t%s\t%s\t%s\t%s\t%s\n", sig, fp, (qp=="" ? "-" : qp), ht, color, htl
+	}' "$_tsv" > "$_manifest"
+	_lmd_render_text "$_manifest" "scan" "$_tpl_dir" > "$_outfile"
+	command rm -f "$_manifest"
+}
+
+# _scan_finalize_session — write TSV session file from in-flight scan_session
+_scan_finalize_session() {
+	if [ ! -f "$scan_session" ]; then
+		return
+	fi
+	# Count hits (skip header if present — header starts with #)
+	tot_hits=$(awk '!/^#/' "$scan_session" | $wc -l)
+	local _sid="${scanid:-$datestamp.$$}"
+	nsess_hits="$sessdir/session.tsv.$_sid"
+	echo "$_sid" > "$sessdir/session.last"
+	nsess="$sessdir/session.$_sid"
+
+	# Write header + hit data to TSV
+	_session_write_header "$nsess_hits" "scan"
+	# Append hit records (scan_session has no header during in-flight scan)
+	cat "$scan_session" >> "$nsess_hits"
+
+	_lmd_elk_post_hits "$nsess_hits"
+
+	_session_render_legacy_text "$nsess_hits" "$nsess"
+
+	# If legacy compat did not produce a plaintext file, point nsess at
+	# the TSV file so downstream consumers (genalert, --report) have a
+	# valid file path.
+	if [ ! -f "$nsess" ]; then
+		nsess="$nsess_hits"
+	fi
+
+	# Count quarantined hits from TSV: lines where field 3 (quarpath) is non-empty and not "-"
+	local _tot_quar
+	_tot_quar=$(awk -F'\t' '!/^#/ && $3 != "" && $3 != "-" { n++ } END { print n+0 }' "$nsess_hits")
+
+	# Resolve trailing fields for v1.2 index schema (fields 10-14).
+	# sig_version: prefer runtime $sig_version; fall back to on-disk sigs.ver sentinel.
+	# engine derivation mirrors _session_write_header at lines 83-87.
+	local _idx_sig_ver _idx_quar_en _idx_completed_hr _idx_engine _idx_hashtype
+	_idx_sig_ver="${sig_version:-$(cat "$sigdir/maldet.sigs.ver" 2>/dev/null || echo "-")}"  # safe: sigs.ver may be absent on fresh install
+	_idx_quar_en="${quarantine_hits:-0}"
+	_idx_completed_hr="${scan_end_hr:--}"
+	if [ "${scan_clamscan:-0}" = "1" ]; then
+		_idx_engine="clamav"
+	else
+		_idx_engine="native"
+	fi
+	_idx_hashtype="${_effective_hashtype:--}"
+
+	# Append to session index (non-hook scans only)
+	_session_index_append "$_sid" "${scan_start:-0}" \
+		"${scan_start_hr:--}" "${scan_et:--}" \
+		"${tot_files:--}" "${tot_hits:--}" "${tot_cl:--}" "$_tot_quar" "${hrspath:--}" \
+		"$_idx_sig_ver" "$_idx_quar_en" \
+		"$_idx_completed_hr" "$_idx_engine" "$_idx_hashtype"
+
+	# Remove in-flight scan_session — all data now in nsess_hits
+	command rm -f "$scan_session"
+}

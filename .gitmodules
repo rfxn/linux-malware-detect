@@ -1,0 +1,3 @@
+[submodule "tests/infra"]
+	path = tests/infra
+	url = https://github.com/rfxn/batsman.git
