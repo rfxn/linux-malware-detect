@@ -21,7 +21,7 @@
 _ALERT_LIB_LOADED=1
 
 # shellcheck disable=SC2034
-ALERT_LIB_VERSION="1.0.7"
+ALERT_LIB_VERSION="1.0.8"
 
 # Parallel indexed arrays (not declare -A) — sourcing from inside a function
 # (BATS load, wrapper fns) would otherwise create locals instead of globals.
@@ -100,18 +100,33 @@ alert_channel_enabled() {
 	[ "${_ALERT_CHANNEL_ENABLED[_ALERT_CHANNEL_IDX]}" = "1" ]
 }
 
-# _alert_tpl_render template_file — render {{VAR}} tokens from environ to stdout
-# Single-pass awk via ENVIRON; unknown tokens become empty. No eval, mawk-compatible.
+# _alert_tpl_render template_file [escape_mode] [skip_tokens] — render {{VAR}} tokens from environ
+# escape_mode: empty (default), "telegram" — applies channel-specific escape to substituted values
+# skip_tokens: space-separated token names exempt from escape (e.g., pre-rendered entry blocks).
+# Tokens with _HTML or _JSON suffix are always exempt (already pre-escaped at source).
 _alert_tpl_render() {
-	local template_file="$1"
+	local template_file="$1" escape_mode="${2:-}" skip_tokens="${3:-}"
 	if [ ! -f "$template_file" ]; then
 		return 1
 	fi
-	awk '{
+	awk -v escape_mode="$escape_mode" -v skip_tokens="$skip_tokens" '
+	function tg_escape(s) {
+		gsub(/\\/, "\\\\\\\\", s)
+		gsub(/[][_*()~`>#+=|{}.!-]/, "\\\\&", s)
+		return s
+	}
+	BEGIN {
+		n = split(skip_tokens, _arr, " ")
+		for (i = 1; i <= n; i++) skip[_arr[i]] = 1
+	}
+	{
 		line = $0
 		while (match(line, /\{\{[A-Z_][A-Z0-9_]*\}\}/)) {
 			token = substr(line, RSTART + 2, RLENGTH - 4)
 			val = ENVIRON[token]
+			if (escape_mode == "telegram" && !(token in skip) && token !~ /_(HTML|JSON)$/) {
+				val = tg_escape(val)
+			}
 			line = substr(line, 1, RSTART - 1) val substr(line, RSTART + RLENGTH)
 		}
 		print line
