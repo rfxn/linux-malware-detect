@@ -130,6 +130,30 @@ _source_lmd_stack() {
     kill "$bg_pid" 2>/dev/null; wait "$bg_pid" 2>/dev/null || true
 }
 
+@test "lifecycle_stop: terminates the scan process group without leaving workers" {
+    _source_lmd_stack
+    command -v setsid >/dev/null || skip "setsid is required"
+    local worker_pid_file="$TEST_DIR/worker.pid"
+    setsid sh -c 'sleep 300 & printf "%s\n" "$!" > "$1"; wait' sh "$worker_pid_file" &
+    local leader_pid=$!
+    for _ in $(seq 1 20); do
+        [ -s "$worker_pid_file" ] && break
+        sleep 0.1
+    done
+    [ -s "$worker_pid_file" ]
+    local worker_pid
+    worker_pid=$(cat "$worker_pid_file")
+    local scanid="260328-4015.$leader_pid"
+    _lifecycle_write_meta "$scanid" "$leader_pid" "$PPID" "/home" "100" "1" "native" "md5" "md5" ""
+
+    run _lifecycle_stop "$scanid"
+    [ "$status" -eq 0 ]
+    ! kill -0 "$leader_pid" 2>/dev/null
+    ! kill -0 "$worker_pid" 2>/dev/null
+    _lifecycle_read_meta "$scanid"
+    [ "$_meta_state" = "stopped" ]
+}
+
 @test "lifecycle_stop: updates meta state to stopped" {
     _source_lmd_stack
     sleep 300 &

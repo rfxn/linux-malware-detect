@@ -153,7 +153,6 @@ _teardown_sigup_fail() {
 
 @test "G-03: alert_failed events wired for all channels" {
     # Expect 5 _lmd_elog_event calls with ALERT_FAILED:
-    # slack, telegram, discord, scan email, digest email
     run grep -c '_lmd_elog_event.*ALERT_FAILED' "$LMD_INSTALL/internals/lmd_alert.sh"
     assert_success
     [ "$output" -eq 5 ]

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head><title>Maldet GUI Test</title></head>
+<body>
+<h1>Maldet GUI Connection Test</h1>
+<div id="status">Testing...</div>
+<div id="output"></div>
+<script>
+const status = document.getElementById('status');
+const output = document.getElementById('output');
+
+async function test() {
+    try {
+        // Test 1: Check API
+        status.textContent = 'Testing API...';
+        const resp = await fetch('/api/check');
+        const data = await resp.json();
+        output.innerHTML += '<p>✅ API /api/check: ' + JSON.stringify(data) + '</p>';
+        
+        // Test 2: Check system endpoint
+        status.textContent = 'Testing /api/system...';
+        const sysResp = await fetch('/api/system');
+        const sysData = await sysResp.json();
+        output.innerHTML += '<p>✅ API /api/system: ' + JSON.stringify(sysData).substring(0, 200) + '...</p>';
+        
+        status.textContent = 'All tests passed! GUI should work.';
+        status.style.color = 'green';
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.style.color = 'red';
+        output.innerHTML += '<p>❌ Error: ' + e.message + '</p>';
+    }
+}
+test();
+</script>
+</body>
+</html>

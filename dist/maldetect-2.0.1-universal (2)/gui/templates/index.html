@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maldet GUI - Linux Malware Detect Web Interface</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <div id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">🛡️</span>
+                    <span class="logo-text">Maldet GUI</span>
+                </div>
+                <span class="version-badge" id="version-badge">v1.0.0</span>
+            </div>
+            <nav class="sidebar-nav" id="sidebar-nav">
+                <a href="#" class="nav-item active" data-page="dashboard"><span class="nav-icon">📊</span>Dashboard</a>
+                <a href="#" class="nav-item" data-page="scanner"><span class="nav-icon">🔍</span>Scanner</a>
+                <a href="#" class="nav-item" data-page="scan-management"><span class="nav-icon">⚙️</span>Scan Management</a>
+                <a href="#" class="nav-item" data-page="quarantine"><span class="nav-icon">📦</span>Quarantine</a>
+                <a href="#" class="nav-item" data-page="reports"><span class="nav-icon">📄</span>Reports</a>
+                <a href="#" class="nav-item" data-page="monitoring"><span class="nav-icon">👁️</span>Monitoring</a>
+                <a href="#" class="nav-item" data-page="updates"><span class="nav-icon">⬆️</span>Updates</a>
+                <a href="#" class="nav-item" data-page="config"><span class="nav-icon">⚙️</span>Configuration</a>
+                <a href="#" class="nav-item" data-page="account"><span class="nav-icon">👤</span>Account</a>
+                <a href="#" class="nav-item" data-page="alerts"><span class="nav-icon">🔔</span>Test Alerts</a>
+                <a href="#" class="nav-item" data-page="logs"><span class="nav-icon">📝</span>Event Log</a>
+                <a href="#" class="nav-item" data-page="ignore"><span class="nav-icon">🚫</span>Ignore Lists</a>
+                <a href="#" class="nav-item" data-page="maintenance"><span class="nav-icon">🔧</span>Maintenance</a>
+                <a href="#" class="nav-item" data-page="system"><span class="nav-icon">🖥️</span>System Info</a>
+                <a href="#" class="nav-item" data-page="about"><span class="nav-icon">ℹ️</span>About Maldet</a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator" id="status-indicator">
+                    <span class="status-dot" id="status-dot"></span>
+                    <span id="status-text">Checking...</span>
+                </div>
+            </div>
+        </div>
+        <div id="main">
+            <div class="top-bar">
+                <div class="page-title" id="page-title">Dashboard</div>
+                <div class="top-bar-actions">
+                    <label class="language-picker" for="language-select">Language
+                        <select id="language-select" class="form-input form-input-sm">
+                            <option value="en">English</option>
+                            <option value="pt-BR">Português (Brasil)</option>
+                        </select>
+                    </label>
+                    <button class="btn btn-ghost btn-sm" id="refresh-btn" title="Refresh">🔄</button>
+                    <button class="btn btn-ghost btn-sm" id="settings-btn" title="Settings">⚙️</button>
+                </div>
+            </div>
+            <div class="content" id="content">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+    <div id="toast-container"></div>
+    <script src="/static/app.js?v=49"></script>
+    <script>
+    // Boot check: se o app.js não carregar/executar (cache antigo, bloqueio,
+    // erro de rede), mostra o motivo na própria página em vez de "Loading...".
+    window.addEventListener('load', function() {
+        setTimeout(function() {
+            if (window.__maldet_booted) return;
+            var c = document.getElementById('content');
+            if (c && c.querySelector('.loading')) {
+                c.innerHTML = '<div class="card"><p style="color:red;"><strong>Falha ao carregar o JavaScript da interface (/static/app.js).</strong></p>' +
+                    '<p style="font-size:13px;">Pressione <strong>Ctrl+F5</strong> para forçar a recarga sem cache. ' +
+                    'Se persistir, abra o Console do navegador (F12) e verifique erros, ou teste: ' +
+                    '<code>curl http://127.0.0.1:32501/static/app.js | head -c 100</code></p></div>';
+            }
+        }, 8000);
+    });
+    </script>
+    </body>
+</html>

@@ -1,0 +1,577 @@
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+#
+##
+# [ General Options ]
+##
+
+# Enable or disable e-mail alerts, this includes application version
+# alerts as well as automated/manual scan reports. On-demand reports
+# can still be sent using '--report SCANID user@domain.com'.
+# [0 = disabled, 1 = enabled]
+email_alert="0"
+
+# The destination e-mail addresses for automated/manual scan reports
+# and application version alerts.
+# [ multiple addresses comma (,) spaced ]
+email_addr="you@domain.com"
+
+# Suppress e-mail alerts for reports where all malware hits were
+# successfully cleaned. When enabled, alerts are only sent if at
+# least one hit remains uncleaned.
+# [0 = disabled, 1 = enabled]
+email_ignore_clean="1"
+
+# The subject line for e-mail alerts.
+email_subj="maldet alert from $(hostname)"
+
+# Enable user alerts for specific web hosting control panels. If hits are detected,
+# attempt to determine the web hosting control in use, if any. If a control
+# panel is detected, determine the user contact information from the panel's
+# toolset and send an email summary of the detected hits to that user.
+# The list of hits will be limited to files owned by the panel user/account in question.
+# Disabling alerts globally with email_alert will also disable this function.
+email_panel_user_alerts="0"
+
+# The from header that will be set on alerts to control panel users. This should
+# be set by any web hosts that will be supporting the control panel users/accounts 
+# on this server.
+email_panel_from="you@example.com"
+
+# The reply-to header that will be set on alerts to control panel users. This should
+# be set by any web hosts that will be supporting the control panel users/accounts 
+# on this server.
+email_panel_replyto="you@example.com"
+
+# The subject that will be used on alerts to control panel account contacts
+email_panel_alert_subj="maldet alert from $(hostname)"
+
+# The format for e-mail alerts. HTML emails include a professionally designed
+# template with color-coded threat types and scan summary.
+# [ text = plain text only, html = HTML with text fallback, both = multipart ]
+email_format="html"
+# Maximum seconds a local mail/sendmail command may block during alert delivery.
+# Set to 0 only when the local MTA is known to be immediately responsive.
+alert_mail_timeout="30"
+
+# SMTP relay for email delivery. When set, emails are sent via this relay
+# instead of the local MTA (mail/sendmail). Supports TLS/SSL.
+# Examples: smtps://smtp.gmail.com:465, smtp://relay.example.com:587
+smtp_relay=""
+
+# Sender address for SMTP relay delivery. Required when smtp_relay is set.
+smtp_from=""
+
+# SMTP authentication credentials. Required for authenticated relay delivery.
+smtp_user=""
+smtp_pass=""
+
+# Enable or disable telegram alerts
+# [0 = disabled, 1 = enabled]
+telegram_alert="0"
+
+# Telegram bot token.
+# more information https://core.telegram.org/bots
+telegram_bot_token="TELEGRAM_BOT_TOKEN"
+
+# Telegram channel id
+# more information https://stackoverflow.com/questions/33858927/how-to-obtain-the-chat-id-of-a-private-telegram-channel?answertab=active#tab-top
+telegram_channel_id="TELEGRAM_CHANNEL_ID"
+
+# This controls the daily automatic updates of LMD signature files
+# and cleaner rules. The signature update process preserves any
+# custom signature or cleaner files. It is highly recommended that this
+# be enabled as new signatures are released multiple times per-week.
+# [0 = disabled, 1 = enabled]
+autoupdate_signatures="1"
+
+# The interval in hours for automatic signature update checks via
+# the independent cron job (/etc/cron.d/maldet-sigup). This runs
+# separately from cron.daily and is idempotent with maldet -u.
+# Set to 0 to disable the independent cron job.
+# [ default = 6, 0 = disabled, valid range 1-24 ]
+sigup_interval="6"
+
+# This controls the daily automatic updates of the LMD installation.
+# The installation update process preserves all configuration options
+# along with custom signature and cleaner files. It is recommended that
+# this be enabled to ensure the latest version, features and bug fixes
+# are always available.
+# [0 = disabled, 1 = enabled]
+autoupdate_version="1"
+
+# This controls validating the LMD executable SHA-256 hash with known
+# good upstream hash value (falls back to MD5 if sha256sum unavailable).
+# This allows LMD to replace the executable / force a reinstallation
+# in the event the LMD executable is tampered with or corrupted. If you
+# intend to make customizations to the LMD executable, you should
+# disable this feature.
+# [0 = disabled, 1 = enabled]
+autoupdate_version_hashed="1"
+
+# The retention period, in days, which quarantine, temporary files and stale
+# session information should be retained. Data older than this value is deleted
+# with the daily cron execution.
+cron_prune_days="21"
+
+# This controls whether or not daily automatic scanning of standard web
+# directories is performed via cron.
+# [0 = disabled, 1 = enabled]
+cron_daily_scan="1"
+
+# The number of days to look back for recently modified files during daily
+# cron scans. Files modified within this number of days will be scanned.
+# This value is passed as the DAYS argument to 'maldet -r PATH DAYS'.
+# [ integer, default = 1 ]
+scan_days="1"
+
+# When defined, the import_config_url option allows a configuration file to be
+# downloaded from a remote URL. The local conf.maldet and internals.conf are
+# parsed followed by the imported configuration file. As such, only variables
+# defined in the imported configuration file are overridden and a full set of
+# configuration options is not explicitly required in the imported file.
+import_config_url=""
+
+# The expiry interval for refreshing the local cached version of the imported
+# configuration file. The default is every 12h (43200 sec) which should be ok
+# for most setups.
+import_config_expire="43200"
+
+# When defined, the sig_import_*_url options allow for the custom signature
+# files to be downloaded from a remote URL. THIS WILL OVERWRITE ANY LOCAL CUSTOM
+# SIGNATURE FILES! It is recommended for large-scale deployments to define these
+# variables within a import_config_url file.
+sig_import_md5_url=""
+sig_import_hex_url=""
+sig_import_yara_url=""
+sig_import_sha256_url=""
+sig_import_csig_url=""
+
+##
+# [ SCAN OPTIONS ]
+##
+# Hash algorithm for file-hash signature matching (stage 1).
+# Controls which hash-based signatures are checked during scans.
+#   auto    - use SHA-256 if CPU has hardware acceleration, else MD5 (recommended)
+#   sha256  - always use SHA-256 (requires sha256sum binary)
+#   md5     - always use MD5 (preserves performance on older CPUs without SHA-NI)
+#   both    - run both MD5 and SHA-256 stages (maximum coverage, ~2x stage 1 time)
+# [ auto = default ]
+scan_hashtype="auto"
+
+# Number of parallel workers for native scan passes (MD5, SHA-256, HEX, and CSIG).
+# Auto detection uses 2 workers per CPU core, up to 8.
+# [ auto = default, 1 = single-threaded, max = 8 ]
+scan_workers="auto"
+
+# Use ClamAV clamscan as the scan engine for improved performance on large
+# large file sets. ClamAV also handles YARA evaluation when native YARA
+# scanning is not enabled.
+# When set to 'auto', LMD detects the clamscan binary at runtime and
+# enables ClamAV scanning only if available.
+# [ auto = detect binary, 0 = disabled, 1 = enabled ]
+scan_clamscan="auto"
+
+# Enable native YARA scanning via the yara binary (or yr from YARA-X).
+# Supports YARA modules, compiled rules, and custom rule files that
+# ClamAV cannot handle.
+# When set to 'auto', LMD enables native YARA scanning only when ClamAV
+# is unavailable and a yara/yr binary is found — this prevents duplicate
+# rule evaluation since ClamAV already processes YARA rules internally.
+# To force native YARA alongside ClamAV, set to '1' and use
+# scan_yara_scope to control which rules each engine handles.
+# [ auto = detect binary (ClamAV fallback), 0 = disabled, 1 = enabled ]
+scan_yara="auto"
+
+# Timeout in seconds for YARA scan invocations.
+# [ 0 = no timeout, default = 300 ]
+scan_yara_timeout="300"
+
+# Controls which YARA rules the native YARA engine processes when both
+# ClamAV and native YARA are enabled (scan_clamscan=1, scan_yara=1).
+# This prevents double-scanning: ClamAV already evaluates YARA rules from
+# rfxn.yara, so by default native YARA only processes custom rules that
+# ClamAV cannot handle (modules, compiled rules, custom.yara.d/).
+#   all    - scan all YARA rules natively (duplicates ClamAV YARA coverage)
+#   custom - only scan custom.yara + custom.yara.d/ natively (recommended)
+# When ClamAV is disabled, this setting is ignored and all rules are
+# scanned natively regardless of scope.
+# [ all | custom ]
+scan_yara_scope="custom"
+
+# Enable compound signature (csig) scanning. Compound signatures support
+# multi-pattern boolean logic (AND/OR/threshold), case-insensitive matching,
+# wide (UTF-16LE) matching, and bounded gap wildcards. csig scanning runs
+# in native mode only (not with ClamAV).
+# [ 0 = disabled, 1 = enabled ]
+scan_csig="1"
+
+# Allows non-root users to perform scans. This must be enabled when
+# using mod_security2 upload scanning or if you want to allow users
+# to perform scans. When enabled, this will populate 'pub/' with user
+# owned quarantine, session and temporary paths to facilitate scans.
+# [ 0 = disabled, 1 = enabled, disabled by default ]
+scan_user_access="0"
+
+# The minimum UID for users when creating per-user scan directories
+# with --mkpubpaths. Users with UID below this value are skipped.
+# [ default = 100 ]
+scan_user_access_minuid="100"
+
+# The maximum directory depth that the scanner will search, a value
+# of 10-15 is recommended.
+# [ changing this may have an impact on scan performance ]
+scan_max_depth="15"
+
+# The minimum file size in bytes for a file to be included in LMD scans.
+# [ changing this may have an impact on scan performance ]
+scan_min_filesize="24"
+
+# The maximum file size for a file to be included in LMD scans. Accepted
+# value formats are b, k, M. The ClamAV engine max-filesize is set separately
+# based on the largest known filesize from the MD5 hash signature file.
+# [ changing this may have an impact on scan performance ]
+scan_max_filesize="2048k"
+
+# The maximum byte depth that the scanner will search into a file's content.
+# Higher values allow deeper pattern matching at the cost of scan performance
+# and temporary disk usage. The default (256 KB) covers 98.9% of HEX patterns;
+# the remaining 1.1% (deep php.inject.* at offsets > 256 KB) are caught by
+# YARA Stage 3 when scan_yara is enabled (default).
+# [ changing this may have an impact on scan performance and disk usage ]
+scan_hexdepth="262144"
+
+# The maximum number of files processed per micro-batch during HEX+CSIG
+# scanning. Valid range: 1024-20480. Values outside this range are clamped
+# with a logged warning. To increase throughput, raise scan_workers instead.
+# To reduce disk usage, lower scan_hexdepth instead.
+# [ changing this may have an impact on scan performance and disk usage ]
+scan_hex_chunk_size="10240"
+
+# Process CPU scheduling (nice) priority level for scan operations.
+# [ -19 = high prio , 19 = low prio, default = 19 ]
+scan_cpunice="19"
+
+# Process IO scheduling (ionice) priority levels for scan operations.
+# (uses cbq best-effort scheduling class [-c2])
+# [ 0 = most favorable IO, 7 = least favorable IO ]
+scan_ionice="6"
+
+# Set hard limit on CPU usage for find and clam(d)scan processes. This
+# requires the 'cpulimit' binary to be available on the server. The values
+# are expressed as relative percentage * N cores on system. An 8 CPU core
+# server would accept values from 0 - 800, 12 cores 0 - 1200 etc...
+scan_cpulimit="0"
+
+# As a design and common use case, LMD typically only scans user space paths
+# and as such it makes sense to ignore files that are root owned. It is
+# recommended to leave this enabled for best performance.
+# Note: in monitor mode, this filter is NOT applied by default (controlled
+# by monitor_scan_owner_filters below) so that root-owned malware drops in
+# user docroots are not silently skipped; issue #485.
+# [ 0 = disabled, 1 = enabled ]
+scan_ignore_root="1"
+
+# This allows for specific user or groups to be ignored entirely from scan
+# file lists. This option should be used with care and is not ideal for
+# ignoring false positives. Instead, you should use one of the ignore files,
+# such as ignore_paths, to exclude a specific file name or path from scans.
+# [ comma or white spaced list of user and group names ]
+scan_ignore_user=""
+scan_ignore_group=""
+
+# The maximum amount of time, in seconds, that the 'find' file list generation
+# will run before it is terminated. All 'find' results up to the point of
+# termination will be fully scanned. If performing a full scan of all user paths
+# on a large server, it is reasonable to expect the find operation may take a
+# long time to complete and as such this feature may interfere. In such cases,
+# this feature can be disabled/modified on a per-scan basis using the
+# '-co|--config-option' CLI option, such as:
+# "maldet -co scan_find_timeout=0 -a /home/?/public_html".
+# [ 0 = disabled, minimum 60, 14400 = 4hr recommended timeout ]
+scan_find_timeout="0"
+
+# The '-r|--recent' 'find' operation performed by LMD detects recently created/modifed
+# user files. This 'find' operation can be especially resource intensive and it may
+# be desirable to persist the file list results so that other applications/tasks
+# may make use of the results. When scan_export_filelist is set enabled, the most
+# recent result set will be saved to '$inspath/tmp/find_results.last'
+# [ 0 = disabled, 1 = enabled ]
+scan_export_filelist="0"
+
+# Include the scanning of known temporary world-writable paths for
+# -a|--scan-all and -r|--recent scan types.
+scan_tmpdir_paths="/tmp /var/tmp /dev/shm /var/fcgi_ipc"
+
+##
+# [ QUARANTINE OPTIONS ]
+##
+# The default quarantine action for malware hits
+# [0 = alert only, 1 = move to quarantine & alert]
+quarantine_hits="0"
+
+# Try to clean malware injections using signature-matched clean rules
+# [NOTE: quarantine_hits=1 required]
+# [0 = disabled, 1 = clean]
+quarantine_clean="0"
+
+# The default suspend action for users with hits
+# Cpanel suspend or set shell /bin/false on non-Cpanel
+# [NOTE: quarantine_hits=1 required]
+# [0 = disabled, 1 = suspend account]
+quarantine_suspend_user="0"
+
+# The minimum userid value that can be suspended
+# [ default = 500 ]
+quarantine_suspend_user_minuid="500"
+
+# When using an external scan engine, such as ClamAV, should files be
+# quarantined if an error from the scanner engine is received?
+# This is defaulted to 1, always quarantine, as ClamAV generates an
+# error exit code for trivial errors such as file not found. As such, a
+# large percentage of scans will have ClamAV exiting with error code 2.
+# [ 0 = do not quarantine, 1 = always quarantine ]
+quarantine_on_error="1"
+
+##
+# [ MONITORING OPTIONS ]
+##
+# The default startup option for monitor mode, either 'users' or path to line
+# spaced file containing local paths to monitor.
+#
+# This option is optional for the init based startup script, maldet.sh. This
+# value is ignored when '/etc/sysconfig/maldet' or '/etc/default/maldet' is
+# present with a defined value for $MONITOR_MODE.
+#
+# The default monitor mode used when the service starts without an explicit
+# mode argument. Set to "users" to monitor all local user home paths, or
+# specify a file/directory path. Leave empty to disable automatic monitoring
+# — the service will exit cleanly until this is explicitly configured.
+# Can also be set via MONITOR_MODE in /etc/sysconfig/maldet or /etc/default/maldet.
+default_monitor_mode=""
+# default_monitor_mode="users"
+# default_monitor_mode="/usr/local/maldetect/monitor_paths"
+
+# The base number of files that can be watched under a path,
+# this ends up being a relative value per-user in user mode.
+# [ maximum file watches = inotify_base_watches*users ]
+inotify_base_watches="16384"
+
+# The sleep time in seconds between monitor runs to scan files
+# that have been created/modified/moved.
+inotify_sleep="15"
+
+# The interval in seconds that inotify will reload configuration
+# data, including remote configuration imports and user signatures.
+inotify_reloadtime="3600"
+
+# The minimum userid that will be added to path monitoring when
+# the USERS option is specified.
+inotify_minuid="500"
+
+# This is the html/web root for users relative to homedir, when
+# this option is set, users will only have the webdir monitored
+# [ comma spaced list, clear option to default monitor user homedir ]
+inotify_docroot="public_html,public_ftp"
+
+# Process CPU scheduling (nice) priority level for inotify monitor operations.
+# [ -19 = high prio , 19 = low prio, default = 18 ]
+inotify_cpunice="18"
+
+# Process IO scheduling (ionice) priority levels for inotify monitor operations.
+# (uses cbq best-effort scheduling class [-c2])
+# [ 0 = most favorable IO, 7 = least favorable IO ]
+inotify_ionice="6"
+
+# Set hard limit on CPU usage for inotify monitoring processes. This requires
+# the 'cpulimit' binary to be available on the server. The values are expressed
+# as relative percentage * N cores on system. An 8 CPU core system would accept
+# values from 0 - 800, a 12 cores system would accept 0 - 1200 etc...
+inotify_cpulimit="0"
+
+# Periodic digest summary interval for monitor mode.
+# Supports: Nh (hours), Nm (minutes), Nd (days). 0 = disabled.
+# When enabled, the monitor fires a digest alert at this interval
+# summarizing all detections since the last digest. The cron.daily
+# --monitor-report fallback still works independently.
+# Default: 24h (matches current daily cron behavior)
+digest_interval="24h"
+
+# Immediate escalation threshold for monitor mode.
+# When a single monitor scan cycle finds this many (or more) malware
+# hits, fire an immediate per-scan alert in addition to the periodic
+# digest. 0 = disabled (legacy behavior — no per-cycle alerts).
+digest_escalate_hits="0"
+
+# Enable cron.daily hook digest sweep (default: 1)
+# When enabled, cron.daily checks hook.hits.log for new detections and
+# fires a digest alert if any are found since the last sweep.
+# Set to 0 to disable (e.g., if monitor mode handles hook digest via digest_interval).
+cron_digest_hook="1"
+
+# Additional paths to monitor alongside the primary monitor mode.
+# Line-separated file. Paths listed here are ADDED to whatever the
+# primary mode (users/path) produces — they do not replace it.
+# Empty or missing file = no extra paths (no-op).
+monitor_paths_extra="/usr/local/maldetect/monitor_paths.extra"
+# One username per line to exclude from `maldet -m users` monitoring.
+monitor_disabled_users="/usr/local/maldetect/monitor_disabled_users"
+
+# Apply scan_ignore_root/scan_ignore_user/scan_ignore_group ownership
+# filters during monitor mode file evaluation. When disabled (0, default),
+# monitor mode scans all files regardless of owner — this is the correct
+# behavior for shared-hosting environments where root-owned PHP drop-ins
+# are a real threat vector and must not be silently skipped. When enabled
+# (1), ownership filters from scan_ignore_root/scan_ignore_user/
+# scan_ignore_group are applied in monitor mode.
+# [0 = disabled (default, production-safe), 1 = enabled (opt-in)]
+monitor_scan_owner_filters="0"
+
+# Remote clamd support
+# If you're running a dedicated clamd server, you can instruct clamdscan to use
+# it instead of the local daemon (which doesn't even need to run). To use
+# this you need to create a 'clamd.remote.conf' with:
+#
+# TCPSocket 3310
+# TCPAddr clamd.example.com
+#
+# Enable connecting to a remote clamd service to conduct all file scanning
+# offload from local system. This requires that clamdscan binary be available
+# to the local system.
+#
+# Files being scanned are effectively piped to remote daemon, this can be very
+# bandwidth intensive.
+# [ 0 = disabled, 1 = enabled ]
+scan_clamd_remote="0"
+
+# To instruct maldetect to use that config, enter the path to that file:
+remote_clamd_config="/etc/clamd.d/clamd.remote.conf"
+
+# If remote clamd doesn't respond properly, how many times should we retry
+# the same file
+remote_clamd_max_retry="5"
+
+# How many seconds to sleep between retries
+remote_clamd_retry_sleep="3"
+
+##
+# [ STATISTICAL ELK COLLECT ]
+##
+# Enable statistic to bring it into ELK stack
+enable_statistic="0"
+
+# The host definition for the TCP input
+# Must be define if enable_statistic=1
+# Example : http://192.168.1.1
+elk_host=""
+
+# The port definition for the TCP input
+# Must be define if enable_statistic=1
+# Example : 12345
+elk_port=""
+
+# The index definition for the Elasticsearch
+# Must be define if enable_statistic=1
+# Example : maldet
+elk_index=""
+
+##
+# [ SESSION FORMAT ]
+##
+# Generate legacy plaintext session files alongside TSV for backward
+# compatibility with external integrations that parse session.* files.
+# [auto] = detect old-format sessions, enable if found (default)
+# [1]    = always generate plaintext session files
+# [0]    = TSV only, no plaintext
+session_legacy_compat="auto"
+
+##
+# [ STATISTICAL ANALYSIS ]
+# This is an EXPERIMENTAL feature and should be used with caution.
+# Currently, this feature can have a substantially negative impact
+# on scan performance, especially with large file sets.
+##
+# The string length test is used to identify threats based on the
+# length of the longest uninterrupted string within a file. This is
+# useful as obfuscated code is often stored using encoding methods
+# that produce very long strings without spaces (e.g: base64)
+# [ string length in characters, default = 150000 ]
+string_length_scan="0"		# [ 0 = disabled, 1 = enabled ]
+string_length="150000"		# [ max string length ]
+
+##
+# [ SCAN PROGRESS LOGGING ]
+##
+# Interval in seconds between progress checkpoints written to the
+# event log during background scans (maldet -b). Each checkpoint
+# reports the current scan stage, files processed, percentage,
+# elapsed time, and estimated time remaining.
+# [ 0 = disabled, default = 60 ]
+scan_progress_log_interval="60"
+
+# Hours to retain completed/killed/stale scan.meta files before cleanup.
+# Meta files for active/paused/stopped scans are never cleaned.
+# Set 0 to disable automatic cleanup.
+# [ default = 48 ]
+scan_meta_cleanup_age="48"
+
+# Days before completed session files are compressed (gzipped).
+# Sessions younger than this age are never compressed.
+# Set 0 to disable automatic compression.
+# [ default = 30 ]
+maint_compress_age="30"
+
+# Days before compressed session files are bundled into monthly archives.
+# Sessions younger than this age are never archived.
+# Set 0 to disable automatic archival.
+# [ default = 90 ]
+maint_archive_age="90"
+
+##
+# [ POST-SCAN HOOKS ]
+##
+# Path to an executable script invoked after scan completion.
+# The hook receives scan results via positional arguments, LMD_*
+# environment variables, and optionally JSON on stdin.
+# Leave empty to disable. The script must be root-owned and not
+# world-writable. See maldet(1) for the full hook contract.
+# NOTE: This variable cannot be overridden via -co for security.
+post_scan_hook=""
+
+# Output tier for the hook script (each tier includes all previous tiers).
+# args = positional args ($1-$5) + LMD_* env vars only
+# file = args + LMD_SESSION_FILE pointing to TSV session file
+# json = file + JSON blob piped to stdin
+# [ args | file | json ]
+post_scan_hook_format="args"
+
+# Execution mode for the hook script.
+# async = fork into background (default, non-blocking)
+# sync  = wait for hook to complete before returning
+# NOTE: monitor mode always forces async regardless of this setting.
+# [ async | sync ]
+post_scan_hook_exec="async"
+
+# Timeout in seconds before the hook is sent SIGTERM via timeout(1).
+# A well-behaved hook will exit on SIGTERM; a hook that traps and ignores
+# SIGTERM will continue to run until it completes (no SIGKILL escalation).
+# Set to 0 to disable timeout (hook runs indefinitely).
+# Minimum effective value is 5 (values 1-4 are clamped to 5).
+# [ 0 = disabled, default = 60 ]
+post_scan_hook_timeout="60"
+
+# Filter which scan types trigger the hook.
+# all     = fire on CLI scans, digest alerts, and escalation alerts
+# cli     = fire only on CLI scans (-a, -r, -k, --continue)
+# digest  = fire only on monitor digest and escalation alerts
+# [ all | cli | digest ]
+post_scan_hook_on="all"
+
+# Minimum number of malware hits required to trigger the hook.
+# Set to 0 to fire the hook even on clean scans.
+# [ 0 = always fire, default = 1 ]
+post_scan_hook_min_hits="1"

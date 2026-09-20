@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+#
+## Hook scan configuration
+## Sourced by hookscan.sh after internals.conf and before scan dispatch.
+## These values override conf.maldet defaults for hook-triggered scans only.
+## Copy to $inspath/conf.maldet.hookscan and modify as needed.
+
+# Quarantine malware hits (default: 1)
+quarantine_hits=1
+
+# Attempt to clean malware from files (default: 0)
+quarantine_clean=0
+
+# Scan engine: auto detects ClamAV daemon, falls back to native (default: auto)
+scan_clamscan=auto
+
+# YARA scanning: auto detects yara/yr binary (default: auto)
+scan_yara=auto
+
+# Scan timeout in seconds (default: 30)
+# ModSecurity has no timeout — this prevents Apache worker thread exhaustion.
+# pure-ftpd runs scripts sequentially — this prevents queue blocking.
+hookscan_timeout=30
+
+# Usermode rate limit: max scans per hour for non-root callers (default: 60)
+# Set to 0 for unlimited. Hook-triggered scans (modsec, ftp) are exempt.
+hookscan_user_rate_limit=60
+
+# Signature name visibility for non-root callers (default: 1)
+# 0 = opaque "MALWARE-DETECTED" in user-facing output, full names in logs
+# 1 = full signature names in all output (industry standard, ClamAV default)
+hookscan_user_show_signames=1
+
+# Hook scan escalation threshold: fire immediate alert if >= N hook hits
+# within a 1-hour rolling window. 0 = disabled. (default: 0)
+# When triggered, fires genalert file (per-scan alert), not digest.
+hookscan_escalate_hits=0
+
+# Comma-separated list of service usernames exempt from homedir restriction.
+# These users (web server, FTP, mail) scan arbitrary paths via service hooks.
+hookscan_service_users="apache,nginx,www-data,nobody,proftpd,exim"
+
+# Fail-open behavior when scan errors occur (default: 1)
+# 1 = return "clean" on errors (safe default — do not block legitimate uploads)
+# 0 = return "infected" on errors (paranoid — blocks uploads on any scan failure)
+hookscan_fail_open=1
+
+# Maximum size in bytes for batch file lists (default: 1048576 = 1MB)
+hookscan_list_max_bytes=1048576
+
+# Maximum number of entries in batch file lists (default: 10000)
+hookscan_list_max_entries=10000

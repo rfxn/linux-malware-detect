@@ -114,13 +114,15 @@ EOF
     assert_output --partial "running"
 }
 
-@test "lifecycle list: text format shows stale scan (dead pid)" {
+@test "lifecycle list: excludes stale scan and persists stale state" {
     _source_lmd_stack
     rm -f "$sessdir"/scan.meta.*
     _create_meta_file "260328-1611.99998" "99998" "running" "/var/www" "2000"
     run _lifecycle_list_active "text" "0"
-    [ "$status" -eq 0 ]
-    assert_output --partial "stale"
+    [ "$status" -eq 1 ]
+    assert_output --partial "No active scans"
+    _lifecycle_read_meta "260328-1611.99998"
+    [ "$_meta_state" = "stale" ]
 }
 
 @test "lifecycle list: text format excludes completed scans" {
@@ -192,6 +194,61 @@ EOF
     run _lifecycle_list_active "json" "0"
     [ "$status" -eq 1 ]
     assert_output --partial "No active scans"
+}
+
+@test "lifecycle report list: omits stale scans from active array" {
+    _source_lmd_stack
+    rm -f "$sessdir"/scan.meta.*
+    local _test_scanid="260328-1623.99999"
+    _create_meta_file "$_test_scanid" "99999" "running" "/gone" "100" "1" "clamdscan"
+    run _lmd_render_json_list
+    [ "$status" -eq 0 ]
+    refute_output --partial "\"$_test_scanid\""
+    _lifecycle_read_meta "$_test_scanid"
+    [ "$_meta_state" = "stale" ]
+}
+
+@test "lifecycle list: marks PID reuse as stale" {
+    _source_lmd_stack
+    rm -f "$sessdir"/scan.meta.*
+    local _test_scanid="260328-1624.99998"
+    _create_meta_file "$_test_scanid" "$$" "running" "/gone" "100" "1" "clamdscan"
+    _lifecycle_update_meta "$_test_scanid" "pid_starttime" "0"
+    run _lifecycle_list_active "json" "0"
+    [ "$status" -eq 1 ]
+    assert_output --partial "No active scans"
+    _lifecycle_read_meta "$_test_scanid"
+    [ "$_meta_state" = "stale" ]
+}
+
+@test "lifecycle list: legacy meta rejects PID reused after scan start" {
+    _source_lmd_stack
+    rm -f "$sessdir"/scan.meta.*
+    local _test_scanid="260328-1625.99997"
+    _create_meta_file "$_test_scanid" "$$" "running" "/gone" "100" "1" "clamdscan"
+    _lifecycle_update_meta "$_test_scanid" "started" "1"
+    run _lifecycle_list_active "json" "0"
+    [ "$status" -eq 1 ]
+    assert_output --partial "No active scans"
+    _lifecycle_read_meta "$_test_scanid"
+    [ "$_meta_state" = "stale" ]
+}
+
+@test "lifecycle active renderers omit scans that become stale during refresh" {
+    _source_lmd_stack
+    rm -f "$sessdir"/scan.meta.*
+    local _test_scanid="260328-1624.99999"
+    _create_meta_file "$_test_scanid" "99999" "running" "/gone" "100" "1" "clamdscan"
+    local _ids="$_test_scanid"
+    run _lifecycle_render_json_active "$_ids"
+    [ "$status" -eq 0 ]
+    refute_output --partial "\"$_test_scanid\""
+    run _lifecycle_render_tsv_active "$_ids"
+    [ "$status" -eq 0 ]
+    refute_output --partial "$_test_scanid"
+    run _lifecycle_render_text_active "0" "$_ids"
+    [ "$status" -eq 0 ]
+    refute_output --partial "$_test_scanid"
 }
 
 # ========================================================================

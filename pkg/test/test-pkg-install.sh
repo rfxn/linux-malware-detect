@@ -134,7 +134,7 @@ echo ""
 # Comprehensive mode coverage across every drifted class. Prior versions only
 # spot-checked conf.maldet + lmd.lib.sh, which missed a dh_fixperms regression
 # that shipped 70+ DEB files at the wrong mode (conf.maldet at 644 leaked
-# SMTP/Slack/Telegram/Discord credentials to any local user).
+# SMTP/Telegram/ credentials to any local user).
 echo "--- Test 5: Config and state permissions ---"
 # /etc/maldet config files (640 — holds credentials; world-read = credential leak)
 check_perms /etc/maldet/conf.maldet 640 "conf.maldet perms"
@@ -161,7 +161,6 @@ check_perms /usr/lib/maldet/internals/ignore_inotify.defaults 640 "ignore_inotif
 check_perms /usr/lib/maldet/internals/.symlink-manifest 640 ".symlink-manifest perms"
 # Alert templates (640 — representative spot checks from each template family)
 check_perms /usr/lib/maldet/internals/alert/digest.html.header.tpl 640 "digest template perms"
-check_perms /usr/lib/maldet/internals/alert/slack.message.tpl 640 "slack template perms"
 # State directories (750)
 check_perms /var/lib/maldet/sigs 750 "sigs dir perms"
 check_perms /var/lib/maldet/quarantine 750 "quarantine dir perms"

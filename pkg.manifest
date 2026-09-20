@@ -11,7 +11,6 @@ network edge intrusion detection systems to extract malware that is actively bei
 used in attacks and generates signatures for detection. Features include MD5 hash, \
 HEX pattern, statistical analysis, and YARA rule scanning, inotify real-time \
 monitoring, ClamAV integration, quarantine/restore/clean operations, and \
-multi-channel alerting (email, Slack, Telegram, Discord)."
 PKG_LICENSE="GPLv2+"
 PKG_URL="https://github.com/rfxn/linux-malware-detect"
 PKG_MAINTAINER="R-fx Networks <proj@rfxn.com>"

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+Usage: maldet-sshfs-scan [options] user@host:/remote/path
+
+Mount a remote path with SSHFS, scan it with Maldet, and unmount it safely.
+SSH keys, ssh-agent, and ~/.ssh/config are used by sshfs; no credentials are
+stored by this helper.
+
+Options:
+  -o, --scan-option OPT Pass an additional option to Maldet (repeatable)
+  -m, --mount-options O Pass options to sshfs
+  --keep-mount           Do not unmount after a foreground scan
+  -h, --help             Show this help
+EOF
+}
+
+mount_options=()
+scan_options=()
+keep_mount=0
+remote=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-o|--scan-option)
+			[ "$#" -ge 2 ] || { echo "ERROR: --scan-option requires a value" >&2; exit 2; }
+			scan_options+=("$2"); shift ;;
+		-m|--mount-options)
+			[ "$#" -ge 2 ] || { echo "ERROR: --mount-options requires a value" >&2; exit 2; }
+			mount_options+=("-o" "$2"); shift ;;
+		--keep-mount) keep_mount=1 ;;
+		-h|--help) usage; exit 0 ;;
+		-*) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*) [ -z "$remote" ] || { echo "ERROR: only one remote path is allowed" >&2; exit 2; }; remote="$1" ;;
+	esac
+	shift
+done
+
+[ -n "$remote" ] || { echo "ERROR: remote path is required" >&2; usage >&2; exit 2; }
+command -v sshfs >/dev/null || { echo "ERROR: sshfs is not installed" >&2; exit 1; }
+command -v fusermount3 >/dev/null || command -v fusermount >/dev/null || {
+	echo "ERROR: fusermount/fusermount3 is not installed" >&2; exit 1;
+}
+command -v maldet >/dev/null || { echo "ERROR: maldet is not installed or not in PATH" >&2; exit 1; }
+
+mount_dir=$(mktemp -d "${TMPDIR:-/tmp}/maldet-sshfs.XXXXXX")
+mounted=0
+cleanup() {
+	if [ "$mounted" -eq 1 ] && [ "$keep_mount" -eq 0 ]; then
+		"${FUSERMOUNT:-$(command -v fusermount3 || command -v fusermount)}" -u "$mount_dir" 2>/dev/null || \
+			umount "$mount_dir" 2>/dev/null || true
+	fi
+	[ "$keep_mount" -eq 1 ] && echo "SSHFS mount retained at $mount_dir" >&2 || rmdir "$mount_dir" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+echo "Mounting $remote at $mount_dir" >&2
+sshfs "${mount_options[@]}" -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3 "$remote" "$mount_dir"
+mounted=1
+
+cmd=(maldet -a "$mount_dir")
+cmd+=("${scan_options[@]}")
+"${cmd[@]}"

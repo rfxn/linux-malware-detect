@@ -1,0 +1,10 @@
+# Maldet GUI - Python Dependencies
+# This application uses only the Python 3 standard library.
+# No external packages are required.
+#
+# Requirements:
+#   - Python 3.6 or later
+#   - Linux Malware Detect (maldet) installed on the system
+#
+# Optional (for development/testing):
+#   - node (for JavaScript syntax checking)

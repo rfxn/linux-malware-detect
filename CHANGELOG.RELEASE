@@ -24,10 +24,7 @@ v2.0.1 | Mar 25 2026:
       compiled rules via yarac, --scan-list batch scanning; issue #392, #277, #239
 [New] Email alerts reimagined: HTML+text dual-format with template engine ({{TOKEN}}
       placeholders); SMTP relay support (smtp_relay, smtp_from, smtp_user, smtp_pass);
-      email_format config (text/html/both); Slack Block Kit, Telegram MarkdownV2,
-      Discord embed templates; on-demand HTML rendering from session data
-[New] Discord alerting: discord_alert and discord_webhook_url config; scan reports
-      uploaded via Discord webhook multipart upload
+       embed templates; on-demand HTML rendering from session data
 [New] Shared library integrations: alert_lib, elog_lib (structured event logging with
       audit trail), tlog_lib (incremental log tracking), pkg_lib (packaging primitives)
 [New] ClamAV signature validation gate: clamscan -d validates sig files before
@@ -44,7 +41,6 @@ v2.0.1 | Mar 25 2026:
 [New] Hook escalation: immediate alert on hit threshold; deduplicated with digest
 [New] Hook digest and reporting: --digest on-demand alerts; --report hooks with
       time/mode filters
-[New] --test-alert {scan|digest} {email|slack|telegram|discord}: send test alert with
       synthetic data through the real rendering pipeline; channel isolation; root-only gate
 [New] Audit log: 7 event types (purge, update, alert_failed, hookscan source/rate metadata)
 [New] importconf: config migration extracted from install.sh for shared use
@@ -338,7 +334,6 @@ v2.0.1 | Mar 25 2026:
       concurrent scan conflicts
 [Fix] scan(): exit 1 when all provided scan paths do not exist
 [Fix] Hash scanning: handle md5sum/sha256sum backslash-escaped filenames
-[Fix] Alerting: Slack migrated from deprecated files.upload API; Telegram /bot prefix;
       token security via curl -K; genalert() state isolation; issue #387, #458, #461, #426
 [Fix] Security: _safe_source_conf() allowlist (79 vars); conf.maldet 0640; dirs 750;
       remote config RCE prevention; semver validation prevents directory traversal;
@@ -377,4 +372,3 @@ v2.0.1 | Mar 25 2026:
 [Fix] RPM/DEB %pre: defensive detection for dir-vs-symlink cpio conflict; install
       no longer fails with "rename failed - Is a directory" when prior install.sh
       or partial install left real directories at symlink-target paths
-

@@ -4,7 +4,6 @@
 #   maldet             — package name (e.g., bfd, apf, maldet)
 #   2.0.1          — version string (e.g., 2.0.1)
 #   Linux Malware Detect — malware scanner for Linux          — one-line package summary
-#   Linux Malware Detect (LMD) is a malware scanner for Linux designed around the threats faced in shared hosted environments. It uses threat data from network edge intrusion detection systems to extract malware that is actively being used in attacks and generates signatures for detection. Features include MD5 hash, HEX pattern, statistical analysis, and YARA rule scanning, inotify real-time monitoring, ClamAV integration, quarantine/restore/clean operations, and multi-channel alerting (email, Slack, Telegram, Discord).      — multi-line package description
 #   GPLv2+           — license identifier (e.g., GPLv2+)
 #   https://github.com/rfxn/linux-malware-detect              — upstream URL
 #   R-fx Networks <proj@rfxn.com>       — maintainer name + email
@@ -48,7 +47,6 @@ Suggests:       curl
 %endif
 
 %description
-Linux Malware Detect (LMD) is a malware scanner for Linux designed around the threats faced in shared hosted environments. It uses threat data from network edge intrusion detection systems to extract malware that is actively being used in attacks and generates signatures for detection. Features include MD5 hash, HEX pattern, statistical analysis, and YARA rule scanning, inotify real-time monitoring, ClamAV integration, quarantine/restore/clean operations, and multi-channel alerting (email, Slack, Telegram, Discord).
 
 %prep
 %setup -q -n %{name}-%{version}

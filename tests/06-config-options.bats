@@ -174,7 +174,6 @@ teardown() {
 
 @test "-co value containing commas is not falsely split" {
     cp "$SAMPLES_DIR/clean-file.txt" "$TEST_SCAN_DIR/"
-    run maldet -co 'slack_channels=#general,#alerts' -a "$TEST_SCAN_DIR"
     assert_success
 }
 

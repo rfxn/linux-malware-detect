@@ -97,17 +97,6 @@ _run_compat_migrate() {
     assert_output --partial 'string_length_scan="1"'
 }
 
-# --- New variable gets template default when absent from old config ---
-
-@test "config merge: new variable absent from old config gets template default" {
-    # Create old config without discord_alert (simulating pre-2.0.1 config)
-    cp "$LMD_INSTALL/conf.maldet" "$_BATS_OLD_CONF"
-    sed -i '/^discord_alert=/d' "$_BATS_OLD_CONF"
-    _run_merge
-    run grep '^discord_alert=' "$_BATS_MERGED"
-    assert_output 'discord_alert="0"'
-}
-
 # --- _compat_migrate tests (CH-3-002: invokes actual function from install.sh) ---
 
 @test "compat migrate: deprecated quar_hits migrated to quarantine_hits" {

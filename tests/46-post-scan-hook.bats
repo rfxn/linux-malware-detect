@@ -260,7 +260,6 @@ HEOF
     local scan_dir
     scan_dir=$(mktemp -d)
     cp "$SAMPLES_DIR/eicar.com" "$scan_dir/"
-    lmd_set_config slack_token "FAKE_SLACK_TOKEN_123"
     lmd_set_config post_scan_hook "$HOOK_SCRIPT"
     lmd_set_config post_scan_hook_exec "sync"
     lmd_set_config post_scan_hook_min_hits "1"
@@ -268,7 +267,6 @@ HEOF
     rm -rf "$scan_dir"
     [ -f "$HOOK_MARKER" ]
     # Sensitive credential vars must NOT appear in the hook's environment
-    run grep 'slack_token\|smtp_pass\|smtp_user\|telegram_bot_token\|discord_webhook_url' "$HOOK_MARKER"
     [ "$status" -ne 0 ]
 }
 

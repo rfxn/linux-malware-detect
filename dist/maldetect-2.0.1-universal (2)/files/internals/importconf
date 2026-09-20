@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# importconf — config migration for LMD upgrades (called by install.sh and RPM/DEB scriptlets)
+
+# INSTALL_PATH: legacy install root (default: /usr/local/maldetect)
+INSTALL_PATH="${INSTALL_PATH:-/usr/local/maldetect}"
+
+# Resolve BK_LAST: follow .bk.last symlink if it exists
+if [ -z "${BK_LAST:-}" ]; then
+    _bk_symlink="${INSTALL_PATH}.bk.last"
+    if [ -L "$_bk_symlink" ]; then
+        BK_LAST=$(command readlink -f "$_bk_symlink")
+    elif [ -d "${INSTALL_PATH}.maldetect.last" ]; then
+        BK_LAST="${INSTALL_PATH}.maldetect.last"
+    else
+        echo "importconf: no backup directory found, skipping import"
+        exit 0
+    fi
+fi
+
+# Early exit if backup has no config to import
+if [ ! -f "$BK_LAST/conf.maldet" ]; then
+    echo "importconf: no conf.maldet in backup ($BK_LAST), skipping import"
+    exit 0
+fi
+
+# Source pkg_lib.sh — try package FHS path first, then legacy path, then relative
+_pkg_lib=""
+for _try_path in \
+    "/usr/lib/maldet/internals/pkg_lib.sh" \
+    "$INSTALL_PATH/internals/pkg_lib.sh" \
+    "$(cd "$(dirname "$0")" && pwd)/pkg_lib.sh"; do
+    if [ -f "$_try_path" ]; then
+        _pkg_lib="$_try_path"
+        break
+    fi
+done
+if [ -z "$_pkg_lib" ]; then
+    echo "importconf: ERROR: cannot find pkg_lib.sh" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "$_pkg_lib"
+
+# Destination path resolution
+# DEST_PREFIX empty = FHS paths (package context)
+# DEST_PREFIX set   = legacy install path (install.sh context)
+if [ -n "${DEST_PREFIX:-}" ]; then
+    _conf_dest="${DEST_PREFIX}"
+    _conf_file="${DEST_PREFIX}/conf.maldet"
+    _state_dest="${DEST_PREFIX}"
+    _log_dest="${DEST_PREFIX}/logs"
+    _lib_dest="${DEST_PREFIX}"
+else
+    _conf_dest="/etc/maldet"
+    _conf_file="/etc/maldet/conf.maldet"
+    _state_dest="/var/lib/maldet"
+    _log_dest="/var/log/maldet"
+    _lib_dest="/usr/lib/maldet"
+fi
+
+# _compat_migrate old_conf merged old_var new_var — migrate renamed config variable from backup
+_compat_migrate() {
+    local _old_conf="$1" _merged="$2" _old_var="$3" _new_var="$4"
+    local _val
+    _val=$(pkg_config_get "$_old_conf" "$_new_var") && [[ -n "$_val" ]] && return 0
+    _val=$(pkg_config_get "$_old_conf" "$_old_var") || return 0
+    [[ -n "$_val" ]] || return 0
+    pkg_config_set "$_merged" "$_new_var" "$_val"
+}
+
+# Config merge
+_merge_tmp=$(command mktemp "${TMPDIR:-/tmp}/lmd-conf-merge.XXXXXX")
+trap 'command rm -f "$_merge_tmp"' EXIT
+
+pkg_config_merge "$BK_LAST/conf.maldet" "$_conf_file" "$_merge_tmp" || {
+    echo "importconf: config merge failed, using new defaults"
+    exit 0
+}
+
+# Standard compat migrations (22 renamed variables)
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" suppress_cleanhit email_ignore_clean
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" quar_clean quarantine_clean
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" quar_hits quarantine_hits
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" quar_susp quarantine_suspend_user
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" quar_susp_minuid quarantine_suspend_user_minuid
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" maxdepth scan_max_depth
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" minfilesize scan_min_filesize
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" maxfilesize scan_max_filesize
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" hexdepth scan_hexdepth
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" clamav_scan scan_clamscan
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" tmpdir_paths scan_tmpdir_paths
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" public_scan scan_user_access
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" pubuser_minuid scan_user_access_minuid
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" scan_nice scan_cpunice
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" inotify_stime inotify_sleep
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" inotify_webdir inotify_docroot
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" inotify_nice inotify_cpunice
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" import_custsigs_md5_url sig_import_md5_url
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" import_custsigs_hex_url sig_import_hex_url
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" import_custsigs_yara_url sig_import_yara_url
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" import_custsigs_sha256_url sig_import_sha256_url
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" import_custsigs_csig_url sig_import_csig_url
+
+# Special case: scan_hexfifo consolidation
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" hex_fifo_scan scan_hexfifo
+_compat_migrate "$BK_LAST/conf.maldet" "$_merge_tmp" hex_fifo_depth scan_hexfifo_depth
+# safe: 2>/dev/null on pkg_config_get — var may be absent from old config
+_hexfifo_val=$(pkg_config_get "$BK_LAST/conf.maldet" scan_hexfifo 2>/dev/null) || \
+    _hexfifo_val=$(pkg_config_get "$BK_LAST/conf.maldet" hex_fifo_scan 2>/dev/null) || \
+    _hexfifo_val=""
+if [[ "${_hexfifo_val:-0}" = "1" ]]; then
+    # safe: 2>/dev/null on pkg_config_get — var may be absent from old config
+    _hexfifo_depth=$(pkg_config_get "$BK_LAST/conf.maldet" scan_hexfifo_depth 2>/dev/null) || \
+        _hexfifo_depth=$(pkg_config_get "$BK_LAST/conf.maldet" hex_fifo_depth 2>/dev/null) || \
+        _hexfifo_depth=""
+    if [[ -n "$_hexfifo_depth" ]]; then
+        pkg_config_set "$_merge_tmp" scan_hexdepth "$_hexfifo_depth"
+    fi
+fi
+
+# Special case: scan_hexdepth old default migration
+# Pre-v2.0.1 default was 524288 (512KB), reduced to 262144 (256KB).
+# Override if still at old default; preserve user customizations.
+# Read from BK_LAST (old config), not _merge_tmp, to avoid conflating
+# a user's explicit scan_hexfifo_depth=524288 with the old default.
+# Only fire when hexfifo was NOT enabled (hexfifo migration already
+# handled the depth in that case).
+# safe: 2>/dev/null on pkg_config_get — var may be absent from old config
+_old_hexdepth=$(pkg_config_get "$BK_LAST/conf.maldet" scan_hexdepth 2>/dev/null) || \
+    _old_hexdepth=""
+if [[ "$_old_hexdepth" = "524288" ]] && [[ "${_hexfifo_val:-0}" != "1" ]]; then
+    pkg_config_set "$_merge_tmp" scan_hexdepth "262144"
+fi
+
+# Special case: scan_hex_workers -> scan_workers (unconditional)
+# safe: 2>/dev/null on pkg_config_get — var may be absent from old config
+_hex_workers=$(pkg_config_get "$BK_LAST/conf.maldet" scan_hex_workers 2>/dev/null) || \
+    _hex_workers=""
+if [[ -n "$_hex_workers" ]]; then
+    pkg_config_set "$_merge_tmp" scan_workers "$_hex_workers"
+fi
+
+# Install merged config
+command mv -f "$_merge_tmp" "$_conf_file"
+command chmod 640 "$_conf_file"
+echo "importconf: imported config options from $BK_LAST/conf.maldet"
+
+# State restoration
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/ignore_* "$_conf_dest/" >>/dev/null 2>&1 || true  # safe: glob may match nothing
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/sess/* "$_state_dest/sess/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/tmp/* "$_state_dest/tmp/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/quarantine/* "$_state_dest/quarantine/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/cron/* "$_lib_dest/cron/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/logs/* "$_log_dest/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+# shellcheck disable=SC2086
+command cp -f "$BK_LAST"/sigs/custom.* "$_state_dest/sigs/" >>/dev/null 2>&1 || true  # safe: glob may match nothing
+if [ -d "$BK_LAST/sigs/custom.yara.d" ]; then
+    command cp -rf "$BK_LAST/sigs/custom.yara.d" "$_state_dest/sigs/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+fi
+command cp -f "$BK_LAST/monitor_paths" "$_conf_dest/" >>/dev/null 2>&1 || true  # safe: file may not exist
+command cp -f "$BK_LAST/monitor_paths.extra" "$_conf_dest/" >>/dev/null 2>&1 || true  # safe: file may not exist
+# shellcheck disable=SC2086
+command cp -pf "$BK_LAST"/clean/custom.* "$_state_dest/clean/" >>/dev/null 2>&1 || true  # safe: glob may match nothing
+if [ -f "$BK_LAST/conf.maldet.hookscan" ]; then
+    command cp -pf "$BK_LAST/conf.maldet.hookscan" "$_conf_dest/" >>/dev/null 2>&1 || true  # safe: file may not exist
+fi
+if [ -d "$BK_LAST/pub" ]; then
+    command cp -af "$BK_LAST/pub" "$_state_dest/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+fi
+if [ -d "$BK_LAST/internals/alert/custom.d" ]; then
+    command cp -rf "$BK_LAST/internals/alert/custom.d" "$_lib_dest/internals/alert/" >>/dev/null 2>&1 || true  # safe: dir may be empty
+fi
+
+# Legacy cleanup
+command rm -f "$_state_dest/tmp/inotify" 2>/dev/null || true  # safe: legacy cursor file
+command rm -f "$_lib_dest/internals/hexfifo.pl" "$_lib_dest/internals/hexstring.pl" \
+    "$_lib_dest/internals/hexfifo" 2>/dev/null || true  # safe: legacy files
+
+# Seed empty custom files if absent
+[ -f "$_state_dest/sigs/custom.md5.dat" ] || command touch "$_state_dest/sigs/custom.md5.dat"
+[ -f "$_state_dest/sigs/custom.sha256.dat" ] || command touch "$_state_dest/sigs/custom.sha256.dat"
+[ -f "$_state_dest/sigs/custom.hex.dat" ] || command touch "$_state_dest/sigs/custom.hex.dat"
+[ -f "$_state_dest/sigs/custom.csig.dat" ] || command touch "$_state_dest/sigs/custom.csig.dat"
+[ -f "$_state_dest/sigs/custom.yara" ] || command touch "$_state_dest/sigs/custom.yara"
+[ -d "$_state_dest/sigs/custom.yara.d" ] || command mkdir -p "$_state_dest/sigs/custom.yara.d"
+
+# Create empty monitor_paths.extra if not restored
+if [ ! -f "$_conf_dest/monitor_paths.extra" ]; then
+    command touch "$_conf_dest/monitor_paths.extra"
+    command chmod 640 "$_conf_dest/monitor_paths.extra"
+fi
+
+echo "importconf: state import complete"
+exit 0

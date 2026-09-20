@@ -1,0 +1,4 @@
+##
+# Place custom variables in this file for execution with the daily cronjob.
+# Any conf.maldet or internals/internals.conf variable can be redefined.
+##

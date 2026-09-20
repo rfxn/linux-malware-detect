@@ -435,6 +435,57 @@ teardown() {
     assert_success
 }
 
+@test "lmdup does not hash-check an installed version newer than upstream" {
+    set_fixture "maldet.current.ver" "1.6.6"
+    set_fixture "maldet.current.hash.sha256" "not-the-installed-version"
+
+    run bash -c '
+        source /opt/tests/helpers/mock-update-server.sh
+        setup_mock_update_server
+        source "'"$LMD_INSTALL"'/internals/internals.conf"
+        source "'"$LMD_INSTALL"'/conf.maldet"
+        if [ -f "$compatcnf" ]; then source "$compatcnf"; fi
+        source "'"$LMD_INSTALL"'/internals/lmd.lib.sh"
+        import_config_url=""
+        web_proxy=""
+        get_proxy_arg=""
+        lmd_version="2.0.1"
+        autoupdate_version_hashed="1"
+        lmdup
+    '
+    assert_success
+    run grep "newer than upstream" "$LMD_INSTALL/logs/event_log"
+    assert_success
+}
+
+@test "lmdup beta hash check falls back to md5 when sha256 sidecar is unavailable" {
+    set_fixture "maldet.current.ver.beta" "2.0.1"
+    local_hash=$(md5sum "$LMD_INSTALL/maldet" "$LMD_INSTALL/internals/lmd.lib.sh" | awk '{print$1}' | tr '\n' ' ' | tr -d ' ')
+    set_fixture "maldet.current.hash.beta" "$local_hash"
+    rm -f "$MOCK_FIXTURES/maldet.current.hash.sha256.beta"
+
+    run bash -c '
+        source /opt/tests/helpers/mock-update-server.sh
+        setup_mock_update_server
+        source "'"$LMD_INSTALL"'/internals/internals.conf"
+        source "'"$LMD_INSTALL"'/conf.maldet"
+        if [ -f "$compatcnf" ]; then source "$compatcnf"; fi
+        source "'"$LMD_INSTALL"'/internals/lmd.lib.sh"
+        import_config_url=""
+        web_proxy=""
+        get_proxy_arg=""
+        lmd_version="2.0.1"
+        autoupdate_version_hashed="1"
+        lmdup_beta=1
+        lmdup
+    '
+    assert_success
+    run grep "falling back to MD5 verification" "$LMD_INSTALL/logs/event_log"
+    assert_success
+    run grep "latest version already installed" "$LMD_INSTALL/logs/event_log"
+    assert_success
+}
+
 
 # ============================================================
 # Cron update integration tests

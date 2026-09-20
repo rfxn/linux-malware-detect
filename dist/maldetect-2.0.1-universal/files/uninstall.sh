@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+##
+# Linux Malware Detect v2.0.1
+#             (C) 2002-2026, R-fx Networks <proj@rfxn.com>
+#             (C) 2026, Ryan MacDonald <ryan@rfxn.com>
+# This program may be freely redistributed under the terms of the GNU GPL v2
+##
+# uninstall.sh — interactive LMD removal (installed-path entry point)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:$PATH
+inspath=/usr/local/maldetect
+
+# Source shared packaging library from install path
+# shellcheck disable=SC1090,SC1091
+source "$inspath/internals/pkg_lib.sh"
+
+echo "This will completely remove Linux Malware Detect from your server including all quarantine data!"
+if ! pkg_uninstall_confirm "Linux Malware Detect"; then
+	echo "You selected No or provided an invalid confirmation, nothing has been done!"
+	exit 0
+fi
+
+# Stop any running monitor before cleanup
+if [ "$(ps -A --user root -o "command" 2>/dev/null | grep maldetect | grep inotifywait)" ]; then
+	/usr/local/sbin/maldet -k >>/dev/null 2>&1
+fi
+
+# Remove service (handles systemd, SysV, chkconfig, update-rc.d, etc.)
+pkg_service_uninstall maldet
+pkg_service_uninstall maldet-gui
+
+pkg_uninstall_cron /etc/cron.d/maldet_pub /etc/cron.daily/maldet /etc/cron.weekly/maldet-watchdog
+
+# Remove man page and symlink
+pkg_uninstall_man 1 maldet
+command rm -f /usr/local/share/man/man1/maldet.1.gz 2>/dev/null  # safe: symlink may not exist
+
+pkg_symlink_cleanup /usr/local/sbin/maldet /usr/local/sbin/lmd /usr/local/sbin/maldet-gui /usr/local/sbin/maldet-webgui /usr/local/sbin/maldet-systray
+command rm -f /usr/share/applications/maldet-systray.desktop /usr/share/applications/maldet-gui.desktop
+if [ -n "${SUDO_USER:-}" ] && command -v getent >/dev/null 2>&1; then
+	_uninstall_gui_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+	command rm -f "$_uninstall_gui_home/Desktop/Maldet WebGUI.desktop" \
+		"$_uninstall_gui_home/Área de Trabalho/Maldet WebGUI.desktop"
+fi
+
+pkg_uninstall_sysconfig maldet
+
+# Remove ClamAV signature symlinks (LMD-specific)
+clamav_paths="/usr/local/cpanel/3rdparty/share/clamav/ /var/lib/clamav/ /var/clamav/ /usr/share/clamav/ /usr/local/share/clamav"
+for cpath in $clamav_paths; do
+	command rm -f "$cpath"/rfxn.* "$cpath"/lmd.user.* 2>/dev/null  # safe: files may not exist
+done
+
+# Remove install directory and all backups
+pkg_uninstall_files "$inspath"
+# shellcheck disable=SC2086
+command rm -rf ${inspath}* 2>/dev/null  # safe: glob matches install dir, backup dirs, and .last symlink
+
+pkg_success "Linux Malware Detect has been uninstalled."

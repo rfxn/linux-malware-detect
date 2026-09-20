@@ -1,0 +1,18 @@
+[Unit]
+Description=Linux Malware Detect WebGUI
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/maldet-gui
+EnvironmentFile=-/etc/sysconfig/maldet-gui
+Environment=MALDET_GUI_HOST=0.0.0.0
+Environment=MALDET_GUI_PORT=32501
+Environment=MALDET_BIN=/usr/local/sbin/maldet
+WorkingDirectory=/usr/local/maldetect/gui
+ExecStart=/usr/bin/env python3 /usr/local/maldetect/gui/maldet_gui.py --host ${MALDET_GUI_HOST} --port ${MALDET_GUI_PORT} --base-dir /usr/local/maldetect --maldet-bin ${MALDET_BIN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

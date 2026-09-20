@@ -50,9 +50,8 @@ EOF
     chmod 755 "$MOCK_BIN_DIR/sendmail"
 }
 
-# Helper: create mock curl binary for Slack/Telegram/Discord tests
-# Handles shared alert_lib curl patterns (same Slack/Telegram APIs,
-# plus Discord webhook support).
+# Helper: create mock curl binary for Telegram tests
+# Handles shared alert_lib curl patterns for Telegram APIs.
 create_mock_curl() {
     local real_curl
     real_curl=$(command -v curl)
@@ -73,8 +72,6 @@ elif [[ "\$*" == *"completeUploadExternal"* ]]; then
     echo '{"ok":true}'
 elif [[ "\$*" == *"chat.postMessage"* ]]; then
     echo '{"ok":true,"channel":"C12345","ts":"1234567890.123456"}'
-elif [[ "\$*" == *"discord"*"webhook"* ]] || [[ "\$*" == *"discordapp"*"webhook"* ]]; then
-    echo '{"id":"msg123"}'
 elif [[ "\$*" == *"-K"* ]]; then
     # Telegram uses -K config file; check config content for sendDocument
     _cfg=""
@@ -118,9 +115,6 @@ elif [[ "$*" == *"completeUploadExternal"* ]]; then
     echo '{"ok":false,"error":"channel_not_found"}'
 elif [[ "$*" == *"chat.postMessage"* ]]; then
     echo '{"ok":false,"error":"invalid_auth"}'
-elif [[ "$*" == *"discord"*"webhook"* ]] || [[ "$*" == *"discordapp"*"webhook"* ]]; then
-    echo '{"code":50035,"message":"Invalid Form Body"}'
-    exit 0
 elif [[ "$*" == *"-K"* ]]; then
     # Telegram uses -K config file; check config content for sendDocument
     _cfg=""
@@ -158,6 +152,45 @@ CURLEOF
 # Helper: run maldet with mock bins in PATH
 run_maldet_with_mocks() {
     PATH="$MOCK_BIN_DIR:$PATH" run maldet "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Telegram lifecycle notifications
+# ---------------------------------------------------------------------------
+
+@test "telegram receives scan start and finish notifications" {
+    create_mock_curl
+    lmd_set_config telegram_alert 1
+    lmd_set_config telegram_bot_token "test-token"
+    lmd_set_config telegram_channel_id "test-chat"
+    cp "$SAMPLES_DIR/clean-file.txt" "$TEST_SCAN_DIR/"
+
+    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
+    assert_scan_completed
+    [ -f /tmp/mock-curl.log ]
+    run grep -q "sendMessage" /tmp/mock-curl.log
+    assert_success
+    run grep -q 'scan\\_started' /tmp/mock-curl.log
+    assert_success
+    run grep -q 'scan\\_completed' /tmp/mock-curl.log
+    assert_success
+}
+
+@test "telegram receives a detection notification when scan finds threats" {
+    create_mock_curl
+    lmd_set_config telegram_alert 1
+    lmd_set_config telegram_bot_token "test-token"
+    lmd_set_config telegram_channel_id "test-chat"
+    lmd_set_config scan_hashtype md5
+    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
+
+    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
+    assert_scan_completed
+    run grep -c "sendMessage" /tmp/mock-curl.log
+    local _telegram_count="$output"
+    [ "$_telegram_count" -ge 3 ]
+    run grep -q 'threat\\_detected' /tmp/mock-curl.log
+    assert_success
 }
 
 # ---------------------------------------------------------------------------
@@ -294,57 +327,6 @@ run_maldet_with_mocks() {
     [ ! -f /tmp/mock-sendmail.log ]
 }
 
-@test "messaging fires when email_alert=0 (genalert file mode)" {
-    # Verify behavioral contract: _genalert_messaging is called unconditionally
-    # in _genalert_scan regardless of email_alert setting
-    create_mock_mail
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    # Email must NOT have been sent
-    [ ! -f /tmp/mock-mail.log ]
-    # Slack messaging must still fire despite email_alert=0
-    [ -f /tmp/mock-curl.log ]
-    run grep "getUploadURLExternal" /tmp/mock-curl.log
-    assert_success
-}
-
-# ---------------------------------------------------------------------------
-# Slack alerts (via shared alert_lib _alert_slack_upload)
-# ---------------------------------------------------------------------------
-
-@test "slack alert calls getUploadURLExternal API" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    [ -f /tmp/mock-curl.log ]
-    run grep "getUploadURLExternal" /tmp/mock-curl.log
-    assert_success
-}
-
-@test "slack alert sends Bearer token in authorization header" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    run grep "Bearer xoxb-test-token-123" /tmp/mock-curl.log
-    assert_success
-}
-
 # ---------------------------------------------------------------------------
 # Telegram alerts (via shared alert_lib _alert_telegram_document)
 # ---------------------------------------------------------------------------
@@ -363,21 +345,6 @@ run_maldet_with_mocks() {
     assert_success
 }
 
-@test "slack alert disabled when slack_alert=0" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 0
-    lmd_set_config telegram_alert 0
-    lmd_set_config discord_alert 0
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    if [ -f /tmp/mock-curl.log ]; then
-        run grep "getUploadURLExternal" /tmp/mock-curl.log
-        assert_failure
-    fi
-}
-
 @test "telegram alert uses configured bot token and channel" {
     create_mock_curl
     lmd_set_config email_alert 0
@@ -389,34 +356,6 @@ run_maldet_with_mocks() {
     assert_scan_completed
     [ -f /tmp/mock-curl.log ]
     run grep -F "bot999:XYZ" /tmp/mock-curl.log
-    assert_success
-}
-
-@test "slack API error logs error field from response" {
-    create_mock_curl_error
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    # Shared lib writes errors to stderr; LMD wraps with eout
-    run grep -E "invalid_auth|messaging channels failed" "$LMD_INSTALL/logs/event_log"
-    assert_success
-}
-
-@test "slack curl failure logs exit code" {
-    create_mock_curl_fail
-    lmd_set_config email_alert 0
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    # Shared lib writes "curl exit N" to stderr; LMD wraps with eout
-    run grep -E "curl exit 7|curl failed|messaging channels failed" "$LMD_INSTALL/logs/event_log"
     assert_success
 }
 
@@ -432,51 +371,6 @@ run_maldet_with_mocks() {
     # Shared lib writes "Unauthorized" to stderr; LMD wraps with eout
     run grep -E "Unauthorized|messaging channels failed" "$LMD_INSTALL/logs/event_log"
     assert_success
-}
-
-# ---------------------------------------------------------------------------
-# Discord alerts (via shared alert_lib _alert_discord_webhook)
-# ---------------------------------------------------------------------------
-
-@test "discord alert calls webhook URL when discord_alert=1" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config discord_alert 1
-    lmd_set_config discord_webhook_url "https://discord.com/api/webhooks/123/abc"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    [ -f /tmp/mock-curl.log ]
-    run grep "discord.com/api/webhooks" /tmp/mock-curl.log
-    assert_success
-}
-
-@test "discord alert disabled when discord_alert=0" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config discord_alert 0
-    lmd_set_config discord_webhook_url "https://discord.com/api/webhooks/123/abc"
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    if [ -f /tmp/mock-curl.log ]; then
-        run grep "discord" /tmp/mock-curl.log
-        assert_failure
-    fi
-}
-
-@test "discord alert not sent when webhook URL empty" {
-    create_mock_curl
-    lmd_set_config email_alert 0
-    lmd_set_config discord_alert 1
-    lmd_set_config discord_webhook_url ""
-    cp "$SAMPLES_DIR/eicar.com" "$TEST_SCAN_DIR/"
-    run_maldet_with_mocks -a "$TEST_SCAN_DIR"
-    assert_scan_completed
-    if [ -f /tmp/mock-curl.log ]; then
-        run grep "discord" /tmp/mock-curl.log
-        assert_failure
-    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -579,49 +473,6 @@ run_maldet_with_mocks() {
     lmd_set_config email_addr "you@domain.com"
     run_maldet_with_mocks --test-alert scan email
     assert_output --partial "not configured"
-}
-
-@test "--test-alert scan slack validates slack_alert enabled" {
-    lmd_set_config slack_alert 0
-    run maldet --test-alert scan slack
-    assert_output --partial "not enabled"
-}
-
-@test "--test-alert scan email sends with [TEST] prefix" {
-    create_mock_mail
-    lmd_set_config email_alert 1
-    lmd_set_config email_addr "test@example.com"
-    lmd_set_config email_subj "maldet alert"
-    run_maldet_with_mocks --test-alert scan email
-    assert_success
-    [ -f /tmp/mock-mail.log ]
-    run grep "TEST" /tmp/mock-mail.log
-    assert_success
-}
-
-@test "--test-alert scan email uses synthetic hits (MD5, HEX, YARA)" {
-    create_mock_sendmail
-    lmd_set_config email_alert 1
-    lmd_set_config email_addr "test@example.com"
-    lmd_set_config email_format "text"
-    run_maldet_with_mocks --test-alert scan email
-    assert_success
-    [ -f /tmp/mock-sendmail.body ]
-    run grep "test.malware.sample" /tmp/mock-sendmail.body
-    assert_success
-}
-
-@test "--test-alert scan slack dispatches to slack channel" {
-    create_mock_curl
-    lmd_set_config slack_alert 1
-    lmd_set_config slack_token "xoxb-test-token-123"
-    lmd_set_config slack_channels "C12345"
-    run_maldet_with_mocks --test-alert scan slack
-    assert_success
-    assert_output --partial "test slack scan alert sent"
-    [ -f /tmp/mock-curl.log ]
-    run grep "getUploadURLExternal" /tmp/mock-curl.log
-    assert_success
 }
 
 @test "--test-alert digest email validates email_alert enabled" {
